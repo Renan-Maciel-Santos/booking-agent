@@ -1,0 +1,44 @@
+# Local development stack: API + PostgreSQL. Credentials come from .env.
+services:
+  # PostgreSQL database.
+  db:
+    # Same major version used by the integration tests.
+    image: postgres:16-alpine
+    # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB are read from .env.
+    env_file: .env
+    # Named volume so data survives container recreation.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Bind to localhost only: the database is never exposed on the network.
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    # Mark the service healthy only when it accepts connections.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # FastAPI application.
+  app:
+    # Built from the local multi-stage Dockerfile.
+    build: .
+    # Shares the same credentials as the database.
+    env_file: .env
+    # Inside the compose network the database host is the service name.
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+    # Expose the API on the host.
+    ports:
+      - "${APP_HOST_PORT:-8000}:8000"
+    # Start only after PostgreSQL is accepting connections.
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+# Named volume declarations.
+volumes:
+  postgres_data:
