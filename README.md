@@ -1,6 +1,6 @@
 # booking-agent
 
-[![CI](https://github.com/<your-user>/booking-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/<your-user>/booking-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/Renan-Maciel-Santos/booking-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Renan-Maciel-Santos/booking-agent/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
