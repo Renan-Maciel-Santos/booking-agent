@@ -1,9 +1,6 @@
 """Declarative base shared by every ORM model."""
 
-# MetaData holds table definitions and the constraint naming convention.
 from sqlalchemy import MetaData
-
-# DeclarativeBase is the SQLAlchemy 2.x typed base class.
 from sqlalchemy.orm import DeclarativeBase
 
 # Deterministic constraint names make Alembic autogenerate diffs stable and readable.
@@ -19,5 +16,4 @@ NAMING_CONVENTION: dict[str, str] = {
 class Base(DeclarativeBase):
     """Base class for ORM models (no domain tables exist yet)."""
 
-    # Shared metadata carrying the naming convention above.
     metadata = MetaData(naming_convention=NAMING_CONVENTION)

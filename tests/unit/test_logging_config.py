@@ -1,25 +1,19 @@
 """Unit tests for the JSON log formatter."""
 
-# Parse the formatter output.
 import json
-
-# Build log records by hand.
 import logging
 
-# System under test.
 from booking_agent.logging_config import JsonFormatter
 
 
 def _make_record(**extra: object) -> logging.LogRecord:
     """Create a log record with optional extra attributes."""
-    # Minimal INFO record.
     record = logging.LogRecord(
         "test.logger", logging.INFO, __file__, 1, "hello %s", ("world",), None
     )
     # Simulate `logger.info(..., extra={...})`.
     for key, value in extra.items():
         setattr(record, key, value)
-    # Hand back the populated record.
     return record
 
 

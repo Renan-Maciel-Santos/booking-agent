@@ -1,21 +1,11 @@
 """Unit tests for the health routes with the service replaced by a fake."""
 
-# Async HTTP client and in-process ASGI transport (no network, no lifespan).
 from httpx import ASGITransport, AsyncClient
 
-# Dependency to override.
 from booking_agent.api.dependencies import get_health_service
-
-# Settings type for the fixture.
 from booking_agent.config import Settings
-
-# Application factory.
 from booking_agent.main import create_app
-
-# Service built with a fake checker.
 from booking_agent.services.health_service import HealthService
-
-# Fake database checker.
 from tests.fakes.fake_health_checker import FakeHealthChecker
 
 # Timeout value used by the services built in this module.
@@ -38,7 +28,6 @@ def _client_with(service: HealthService, settings: Settings) -> AsyncClient:
     app = create_app(settings)
     # Swap the production service for the test one.
     app.dependency_overrides[get_health_service] = lambda: service
-    # Route requests directly into the ASGI app.
     return AsyncClient(transport=ASGITransport(app=app), base_url=BASE_URL)
 
 

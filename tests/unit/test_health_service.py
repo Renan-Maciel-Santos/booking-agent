@@ -1,15 +1,9 @@
 """Unit tests for HealthService using a fake database checker."""
 
-# pytest provides parametrization.
 import pytest
-
-# Concrete SQLAlchemy error to simulate a DB failure.
 from sqlalchemy.exc import OperationalError
 
-# System under test.
 from booking_agent.services.health_service import ComponentStatus, HealthService, HealthStatus
-
-# Fake database checker.
 from tests.fakes.fake_health_checker import FakeHealthChecker
 
 # Short timeout keeps the timeout test fast.
@@ -21,7 +15,6 @@ SLOW_DATABASE_DELAY_SECONDS = 0.5
 def test_liveness_is_ok_without_touching_the_database() -> None:
     # Arrange a checker that would fail if it were called.
     checker = FakeHealthChecker(error=OSError("must not be called"))
-    # Build the service with the failing checker.
     service = HealthService(checker, timeout_seconds=FAST_TIMEOUT_SECONDS)
 
     # Act: run the liveness check.
@@ -68,7 +61,6 @@ async def test_readiness_is_degraded_when_database_fails(error: BaseException) -
 async def test_readiness_is_degraded_when_database_times_out() -> None:
     # Arrange a database slower than the allowed timeout.
     checker = FakeHealthChecker(delay_seconds=SLOW_DATABASE_DELAY_SECONDS)
-    # Build the service with a short timeout.
     service = HealthService(checker, timeout_seconds=FAST_TIMEOUT_SECONDS)
 
     # Act: run the readiness check.

@@ -1,12 +1,7 @@
 """Single place where structured JSON logging is configured."""
 
-# Serialize each log record as one JSON document.
 import json
-
-# Standard library logging is the backbone; no extra dependency is required.
 import logging
-
-# Timestamps are emitted in UTC ISO-8601 format.
 from datetime import UTC, datetime
 
 # Attributes every LogRecord has, plus uvicorn's ANSI-colored duplicate message;
@@ -29,23 +24,19 @@ class JsonFormatter(logging.Formatter):
         Returns:
             JSON-encoded log line.
         """
-        # Base fields present on every log line.
         payload: dict[str, object] = {
             "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
         }
-        # Collect user-supplied context passed via `logger.info(..., extra={...})`.
         extra_fields = {
             key: value
             for key, value in vars(record).items()
             if key not in _RESERVED_RECORD_ATTRIBUTES
         }
-        # Only add the "extra" key when there is context to show.
         if extra_fields:
             payload["extra"] = extra_fields
-        # Attach the formatted traceback when an exception is being logged.
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         # default=str keeps logging from crashing on non-JSON-serializable values.
@@ -58,19 +49,14 @@ def configure_logging(level: str) -> None:
     Args:
         level: Minimum level name, e.g. "INFO" or "DEBUG".
     """
-    # One stream handler writing to stderr, the container-friendly default.
+    # stderr is the container-friendly default destination.
     handler = logging.StreamHandler()
-    # Every record leaving this handler is rendered as JSON.
     handler.setFormatter(JsonFormatter())
-    # Grab the root logger so every module logger inherits this configuration.
     root_logger = logging.getLogger()
-    # Replace existing handlers so repeated calls (e.g. in tests) do not duplicate output.
+    # Replace (not append) so repeated calls, e.g. in tests, do not duplicate output.
     root_logger.handlers = [handler]
-    # Apply the configured minimum level.
     root_logger.setLevel(level.upper())
-    # Route uvicorn's own loggers through the root JSON handler.
+    # Route uvicorn's loggers through the root JSON handler instead of their own.
     for uvicorn_logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        # Drop uvicorn's default handlers so lines are not printed twice.
         logging.getLogger(uvicorn_logger_name).handlers = []
-        # Let records bubble up to the root handler.
         logging.getLogger(uvicorn_logger_name).propagate = True
