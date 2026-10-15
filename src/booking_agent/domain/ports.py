@@ -1,9 +1,11 @@
-"""Ports: contracts the domain needs, implemented by adapters in integrations/."""
+"""Ports: contracts the inner layers need, implemented by outer layers.
 
-# Protocol enables structural typing (no inheritance required from adapters).
+Services depend on these Protocols, never on concrete adapters or repositories,
+so dependencies always point inwards (Dependency Inversion Principle).
+"""
+
 from typing import Protocol
 
-# Structured result every parser must return.
 from booking_agent.domain.booking_intent import BookingIntent
 
 
@@ -11,8 +13,7 @@ class IntentParser(Protocol):
     """Turns a raw user message into a validated BookingIntent.
 
     Implementations (e.g. an OpenAI-backed adapter) live in
-    booking_agent.integrations.llm. The domain owns this contract so the
-    dependency points inwards (Dependency Inversion Principle).
+    booking_agent.integrations.llm.
     """
 
     async def parse(self, user_message: str) -> BookingIntent:
@@ -24,4 +25,15 @@ class IntentParser(Protocol):
         Returns:
             Validated booking intent.
         """
+        ...
+
+
+class DatabaseHealthChecker(Protocol):
+    """Verifies that the database can be reached.
+
+    Implemented by booking_agent.repositories.health_repository.HealthRepository.
+    """
+
+    async def ping(self) -> None:
+        """Raise if the database cannot be reached."""
         ...
