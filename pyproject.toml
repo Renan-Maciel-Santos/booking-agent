@@ -1,0 +1,116 @@
+# Project metadata consumed by uv, build backends and tooling.
+[project]
+# Distribution name of the package.
+name = "booking-agent"
+# Semantic version of the application.
+version = "0.1.0"
+# One-line summary shown by package indexes.
+description = "Conversational booking agent where the LLM only parses intent and a deterministic service layer owns every business rule."
+# Points to the README rendered by package indexes.
+readme = "README.md"
+# Minimum interpreter version supported.
+requires-python = ">=3.12,<3.13"
+# SPDX license identifier.
+license = { text = "MIT" }
+# Runtime dependencies (production image installs only these).
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "openai-agents>=0.2",
+]
+
+# Development-only dependencies (never shipped in the runtime image).
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "testcontainers[postgres]>=4.15",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.8",
+    "types-docker>=7.2.0.20261006",
+]
+
+# Build backend used to package the src/ layout.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Tell hatchling where the importable package lives.
+[tool.hatch.build.targets.wheel]
+packages = ["src/booking_agent"]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+# Keep line length aligned with the formatter.
+line-length = 100
+# Target syntax for pyupgrade-style rules.
+target-version = "py312"
+# Paths ruff should lint.
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Broad rule set: pyflakes, pycodestyle, isort, bugbear, pyupgrade, bandit,
+# annotations, docstrings, simplify, naming, blind-except, print and pytest style.
+select = ["E", "W", "F", "I", "B", "UP", "S", "ANN", "D", "SIM", "N", "BLE", "T20", "PT", "RUF"]
+# D203/D213 conflict with the Google convention chosen below.
+ignore = ["D203", "D213"]
+
+[tool.ruff.lint.pydocstyle]
+# Enforce Google-style docstrings.
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use bare asserts and do not need docstrings on every helper.
+"tests/**" = ["S101", "D"]
+# Alembic env/template files follow Alembic's own structure.
+"migrations/**" = ["D", "ANN"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+# Interpreter version mypy should type-check against.
+python_version = "3.12"
+# Enable every optional strictness flag.
+strict = true
+# Pydantic plugin understands model constructors and validators.
+plugins = ["pydantic.mypy"]
+# Source roots for module resolution.
+mypy_path = "src"
+# Type-check the package, tests and migrations.
+files = ["src", "tests", "migrations"]
+
+[tool.pydantic-mypy]
+# Reject unknown keyword arguments in model constructors.
+init_forbid_extra = true
+# Type __init__ parameters with the declared field types.
+init_typed = true
+
+# testcontainers ships no type stubs.
+[[tool.mypy.overrides]]
+module = ["testcontainers.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+# Run async tests without decorating each one.
+asyncio_mode = "auto"
+# One event loop per session so session-scoped async fixtures work.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+# Directory containing the test suite.
+testpaths = ["tests"]
+# Make the tests package importable (for tests.fakes).
+pythonpath = ["."]
+# Fail on unknown markers and show a short summary of skips/failures.
+addopts = "--strict-markers -ra"
+# Markers used to split the suite in CI and locally.
+markers = [
+    "unit: fast tests with no external dependencies",
+    "integration: tests that need Docker (real PostgreSQL via testcontainers)",
+]
