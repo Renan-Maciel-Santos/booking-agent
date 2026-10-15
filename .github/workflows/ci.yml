@@ -1,0 +1,52 @@
+# Continuous integration: lint, format, type-check and test on every push/PR.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only token: the pipeline never writes to the repository.
+permissions:
+  contents: read
+
+# Cancel superseded runs of the same branch/PR to save minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, type-check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Fetch the source code.
+      - uses: actions/checkout@v7
+
+      # Install uv with dependency caching keyed on uv.lock.
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: "3.12"
+
+      # Install exactly the locked dependencies (fails if uv.lock is stale).
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Mypy (strict)
+        run: uv run mypy
+
+      - name: Unit tests
+        run: uv run pytest -m unit
+
+      # GitHub-hosted Ubuntu runners ship Docker, which testcontainers needs.
+      - name: Integration tests
+        run: uv run pytest -m integration
