@@ -23,8 +23,9 @@ is written in **English**.
 
 - Python 3.12, PEP 8, full type hints, `mypy --strict` must pass.
 - Google-style docstrings on modules, classes and public functions.
-- **Documentation comments: one comment *above* each logical line or block,
-  explaining what it does and why.** Never use inline end-of-line comments.
+- **Comments explain *why*, never *what*.** Only comment non-obvious decisions,
+  trade-offs and gotchas; the code and docstrings must explain the rest. Place
+  comments above the line they refer to, never inline at the end of a line.
 - Use the logger (`logging.getLogger(__name__)`), never `print`. JSON logging is
   configured only in `logging_config.py`.
 - Catch specific exceptions only. A bare or broad `except` is forbidden.
