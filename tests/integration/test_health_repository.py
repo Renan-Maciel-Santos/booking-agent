@@ -1,18 +1,10 @@
 """Integration tests against a real PostgreSQL instance."""
 
-# Sync client that runs the app lifespan (startup/shutdown).
 from fastapi.testclient import TestClient
-
-# Async engine type.
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-# Settings for the app factory.
 from booking_agent.config import Settings
-
-# Application factory.
 from booking_agent.main import create_app
-
-# Repository under test.
 from booking_agent.repositories.health_repository import HealthRepository
 
 

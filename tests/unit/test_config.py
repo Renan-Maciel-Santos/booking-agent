@@ -1,6 +1,5 @@
 """Unit tests for environment-driven settings."""
 
-# Fixture helper building isolated settings.
 from tests.conftest import build_test_settings
 
 

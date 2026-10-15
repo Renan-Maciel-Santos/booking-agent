@@ -1,6 +1,5 @@
 """Factories for the async SQLAlchemy engine and session maker."""
 
-# Async engine/session primitives from SQLAlchemy 2.x.
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -8,7 +7,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-# Typed settings carrying the connection parameters.
 from booking_agent.config import Settings
 
 
@@ -38,5 +36,6 @@ def build_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessio
     Returns:
         Factory producing AsyncSession objects.
     """
-    # expire_on_commit=False keeps loaded attributes usable after commit in async code.
+    # expire_on_commit=False keeps loaded attributes usable after commit in async code,
+    # where lazy reloads would otherwise fail.
     return async_sessionmaker(engine, expire_on_commit=False)

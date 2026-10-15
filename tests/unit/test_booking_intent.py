@@ -1,21 +1,12 @@
 """Unit tests for the BookingIntent structured-output contract."""
 
-# Datetimes with and without timezone.
 from datetime import UTC, datetime
-
-# Identifier for existing appointments.
 from uuid import uuid4
 
-# pytest assertions on raised errors.
 import pytest
-
-# Raised by Pydantic on invalid input.
 from pydantic import ValidationError
 
-# System under test.
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
-
-# Fake parser that satisfies the port.
 from booking_agent.domain.ports import IntentParser
 from tests.fakes.fake_intent_parser import FakeIntentParser
 

@@ -12,7 +12,6 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 
-# All build work happens here.
 WORKDIR /app
 
 # Install third-party dependencies first so this layer is cached until the lockfile changes.
@@ -21,7 +20,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --frozen --no-dev --no-install-project
 
-# Copy project metadata and source code.
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 
@@ -41,20 +39,16 @@ ENV PYTHONUNBUFFERED=1 \
 # Dedicated unprivileged system user (least privilege).
 RUN groupadd --system app && useradd --system --gid app --no-create-home app
 
-# Application directory.
 WORKDIR /app
 
-# Copy the ready virtualenv from the builder, owned by the app user.
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 
 # Migrations are shipped so `alembic upgrade head` can run from this image.
 COPY --chown=app:app alembic.ini ./
 COPY --chown=app:app migrations ./migrations
 
-# Drop root before starting the process.
 USER app
 
-# Document the port uvicorn listens on inside the container.
 EXPOSE 8000
 
 # Readiness probe via the Python stdlib, because slim images ship without curl.
