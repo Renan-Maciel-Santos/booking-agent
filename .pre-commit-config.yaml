@@ -1,0 +1,32 @@
+# Git hooks run before each commit. Install with: uv run pre-commit install
+repos:
+  # Generic hygiene hooks.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+      # Blocks accidental commits of private keys.
+      - id: detect-private-key
+
+  # Linting and formatting (version aligned with the dev dependency).
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # mypy runs inside the project venv so it sees the real dependencies and the
+  # pydantic plugin; an isolated mirrors-mypy env would report false errors.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (strict)
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
