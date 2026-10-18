@@ -8,6 +8,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from booking_agent.config import get_settings
+from booking_agent.database import models  # noqa: F401
 from booking_agent.database.base import Base
 from booking_agent.database.engine import build_engine
 
