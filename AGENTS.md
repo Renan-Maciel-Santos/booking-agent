@@ -50,3 +50,13 @@ is written in **English**.
 - Record architectural changes as a new ADR in `docs/adr/`.
 - Never create `.env` or commit secrets. Only `.env.example` is versioned.
 - Do not push. Propose a plan first and wait for approval on non-trivial changes.
+
+## Process and quality rules
+
+- Every commit must pass pre-commit (`uv run pre-commit run --all-files`) and unit tests (`uv run pytest -m unit`).
+- Integration tests run against real PostgreSQL (via testcontainers) and are never silently skipped.
+- Never alter a correct test to make incorrect code pass.
+- Never leave test values or placeholder credentials as defaults in production code.
+- Never swallow errors from external services: propagate and handle them explicitly.
+- No test-specific logic or bypasses inside production code.
+- Never commit agent log files, status files, scratch files, or session artifacts to the repository.
