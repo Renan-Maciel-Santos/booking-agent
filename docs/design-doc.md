@@ -65,44 +65,171 @@ concrete adapters. Wiring happens in `api/dependencies.py`.
 4. Writes happen in a single transaction; database constraints reject conflicts.
 5. The reply text is produced from templates by the service, not by the LLM.
 
-## 5. Data model (draft)
+## 5. Data model
 
 ```mermaid
 erDiagram
     customers ||--o{ appointments : books
     services ||--o{ appointments : "is booked as"
-    customers ||--o| conversation_state : has
+    barbers ||--o{ appointments : "is assigned to"
     customers {
         uuid id PK
-        text phone UK
+        text phone UK "E.164 format"
         text name
         timestamptz created_at
+        timestamptz updated_at
     }
     services {
         uuid id PK
         text name UK
-        int duration_minutes
+        int duration_minutes "> 0"
+        int price_cents ">= 0"
         bool active
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    barbers {
+        uuid id PK
+        text name
+        bool active
+        timestamptz created_at
+        timestamptz updated_at
     }
     appointments {
         uuid id PK
         uuid customer_id FK
         uuid service_id FK
-        tstzrange slot
-        text status
+        uuid barber_id FK
+        timestamptz starts_at
+        timestamptz ends_at
+        int price_cents ">= 0"
+        text status "confirmed | cancelled | completed"
         timestamptz created_at
+        timestamptz updated_at
     }
-    conversation_state {
-        uuid customer_id PK
+    conversation_states {
+        text phone PK "E.164 format"
         text stage
-        jsonb pending_entities
+        jsonb slots
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    processed_messages {
+        text message_id PK
+        text status "processing | done | failed"
+        timestamptz created_at
         timestamptz updated_at
     }
 ```
 
-Key integrity rule: an `EXCLUDE USING gist (slot WITH &&) WHERE (status = 'confirmed')`
-constraint (with `btree_gist`) makes overlapping confirmed appointments impossible
-at the database level, so a race between two requests cannot double book.
+### 5.1 Tables and Constraints
+
+#### `processed_messages`
+Guarantees idempotency for incoming webhook calls.
+- **Columns**:
+  - `message_id`: `text PRIMARY KEY` (channel/webhook message identifier)
+  - `status`: `text NOT NULL` (`processing`, `done`, or `failed`)
+  - `created_at`: `timestamptz NOT NULL DEFAULT now()`
+  - `updated_at`: `timestamptz NOT NULL DEFAULT now()`
+- **Constraints**:
+  - `CHECK (status IN ('processing', 'done', 'failed'))`
+- **Rationale & Mechanics**: In messaging channels like WhatsApp, network retries and webhook deduplication issues from upstream orchestrators (e.g. n8n or WhatsApp Cloud API) can deliver the exact same message multiple times. Without an idempotency layer at the edge, duplicate deliveries could trigger duplicate booking operations or corrupt the conversation state.
+  - An atomic acquisition query (`INSERT ... ON CONFLICT (message_id) DO UPDATE ...`) ensures that only one worker acquires the message.
+  - Messages in `failed` status can be retried immediately.
+  - Messages stuck in `processing` can be reacquired after a configurable timeout (e.g., if a worker crashed before completing).
+
+#### `customers`
+Stores customer identity and contact information.
+- **Columns**:
+  - `id`: `uuid PRIMARY KEY DEFAULT gen_random_uuid()`
+  - `phone`: `text NOT NULL UNIQUE` (customer identifier in E.164 format, e.g. `+1234567890`)
+  - `name`: `text NOT NULL`
+  - `created_at`: `timestamptz NOT NULL DEFAULT now()`
+  - `updated_at`: `timestamptz NOT NULL DEFAULT now()`
+- **Constraints**:
+  - `CHECK (phone ~ '^\+[1-9]\d{1,14}$')` (enforces valid E.164 phone numbering)
+- **Indexes**:
+  - `pk_customers` on `id`
+  - `uq_customers_phone` (unique) on `phone`
+- **Creation Timing**: `customers.name` is `NOT NULL`. A customer record is created only at the moment of booking confirmation, once the customer's name has been elicited and validated during the conversation. Prior to booking, only `conversation_states` exists.
+
+#### `services`
+Catalog of barbershop services and pricing.
+- **Columns**:
+  - `id`: `uuid PRIMARY KEY DEFAULT gen_random_uuid()`
+  - `name`: `text NOT NULL UNIQUE`
+  - `duration_minutes`: `integer NOT NULL`
+  - `price_cents`: `integer NOT NULL`
+  - `active`: `boolean NOT NULL DEFAULT true`
+  - `created_at`: `timestamptz NOT NULL DEFAULT now()`
+  - `updated_at`: `timestamptz NOT NULL DEFAULT now()`
+- **Constraints**:
+  - `CHECK (duration_minutes > 0)`
+  - `CHECK (price_cents >= 0)`
+- **Indexes**:
+  - `pk_services` on `id`
+  - `uq_services_name` (unique) on `name`
+
+#### `barbers`
+The schedulable resource.
+- **Columns**:
+  - `id`: `uuid PRIMARY KEY DEFAULT gen_random_uuid()`
+  - `name`: `text NOT NULL`
+  - `active`: `boolean NOT NULL DEFAULT true`
+  - `created_at`: `timestamptz NOT NULL DEFAULT now()`
+  - `updated_at`: `timestamptz NOT NULL DEFAULT now()`
+- **Indexes**:
+  - `pk_barbers` on `id`
+- **Rationale**: Even if Northside Barbers operates with a single chair initially, modeling `barbers` as a distinct entity decouples the business logic from a singleton assumption. It makes the double-booking exclusion constraint explicitly scoped per resource (`barber_id WITH =`), allows multiple staff members without future schema migrations, and cleanly separates staff management from customer accounts. Indexes on `active` are intentionally omitted until concrete query patterns require them.
+
+#### `appointments`
+Booked service instances for a specific customer, barber, and time slot.
+- **Columns**:
+  - `id`: `uuid PRIMARY KEY DEFAULT gen_random_uuid()`
+  - `customer_id`: `uuid NOT NULL REFERENCES customers(id) ON DELETE RESTRICT`
+  - `service_id`: `uuid NOT NULL REFERENCES services(id) ON DELETE RESTRICT`
+  - `barber_id`: `uuid NOT NULL REFERENCES barbers(id) ON DELETE RESTRICT`
+  - `starts_at`: `timestamptz NOT NULL`
+  - `ends_at`: `timestamptz NOT NULL`
+  - `price_cents`: `integer NOT NULL`
+  - `status`: `text NOT NULL DEFAULT 'confirmed'`
+  - `created_at`: `timestamptz NOT NULL DEFAULT now()`
+  - `updated_at`: `timestamptz NOT NULL DEFAULT now()`
+- **Constraints**:
+  - `CHECK (ends_at > starts_at)`
+  - `CHECK (price_cents >= 0)`
+  - `CHECK (status IN ('confirmed', 'cancelled', 'completed'))`
+  - `CONSTRAINT appointments_barber_slot_excl EXCLUDE USING gist (barber_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&) WHERE (status = 'confirmed')` (requires `btree_gist`)
+- **Indexes**:
+  - `pk_appointments` on `id`
+  - `ix_appointments_customer_id` on `customer_id`
+  - `ix_appointments_barber_id_starts_at` on `barber_id, starts_at`
+  - GiST index created automatically by the exclusion constraint
+- **Service Layer Invariants**:
+  - `price_cents`: Represents the price frozen at the exact time of booking. Future catalog price updates do not retroactively alter confirmed appointments.
+  - `ends_at = starts_at + service.duration_minutes`: Computed and guaranteed by the `BookingService` layer before persisting.
+
+#### `conversation_states`
+Tracks multi-turn chat interaction state and extracted slot values per customer phone number.
+- **Columns**:
+  - `phone`: `text PRIMARY KEY` (E.164 phone number)
+  - `stage`: `text NOT NULL DEFAULT 'idle'`
+  - `slots`: `jsonb NOT NULL DEFAULT '{}'::jsonb`
+  - `created_at`: `timestamptz NOT NULL DEFAULT now()`
+  - `updated_at`: `timestamptz NOT NULL DEFAULT now()`
+- **Constraints**:
+  - `CHECK (phone ~ '^\+[1-9]\d{1,14}$')`
+- **Decoupling from `customers`**: `conversation_states` has **no foreign key** to `customers`. Conversations frequently occur before a customer record exists (e.g. an unknown caller inquiring about services or starting a booking before their name is collected). Keying by phone number keeps dialogue state completely independent of customer profile creation.
+
+### 5.2 Timestamp and Audit Rules
+- **Database layer**: All timestamps are stored in UTC using PostgreSQL `timestamptz`. Repositories and SQL queries operate strictly in UTC without local conversions.
+- **Service layer**: The business timezone (e.g. barbershop local time) is managed strictly within the service layer. It converts user-requested dates and times to UTC before querying or persisting, and formats UTC timestamps back to local time when generating customer responses.
+- **`updated_at` management**: Updating `updated_at = now()` is the explicit responsibility of the repository layer on every SQL `UPDATE` statement. No database triggers are used, keeping data mutation logic explicit in application code.
+
+### 5.3 Double-booking Prevention
+Exclusivity is enforced at the database level through a PostgreSQL exclusion constraint with the `btree_gist` extension:
+`EXCLUDE USING gist (barber_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&) WHERE (status = 'confirmed')`.
+The detailed architectural rationale, concurrency safety analysis, and error translation are documented in [ADR 0002](adr/0002-double-booking-exclusion-constraint.md).
 
 ## 6. Alternatives considered
 
