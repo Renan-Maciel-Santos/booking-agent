@@ -15,7 +15,7 @@ conflicts, rescheduling, cancellation) and all persistence run in a
 > Status: scaffold. Health checks, tooling, CI and the LLM port are in place.
 > Domain features land in the next PRs (see [Roadmap](#roadmap)).
 
-## Architecture
+## Target architecture
 
 ```mermaid
 flowchart LR
