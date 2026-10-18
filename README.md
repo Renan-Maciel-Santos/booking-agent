@@ -12,24 +12,61 @@ conflicts, rescheduling, cancellation) and all persistence run in a
 **deterministic Python service layer on PostgreSQL**. The rationale is in
 [ADR 0001](docs/adr/0001-llm-only-at-the-edge.md).
 
-> Status: scaffold. Health checks, tooling, CI and the LLM port are in place.
-> Domain features land in the next PRs (see [Roadmap](#roadmap)).
+> Status: schema, repositories and double-booking protection in place.
+> Domain services land in the next PRs (see [Roadmap](#roadmap)).
+
+## Tech stack
+
+| Technology | Role |
+|---|---|
+| **Python 3.12** | Core runtime environment |
+| **FastAPI** | Asynchronous HTTP API routing and validation |
+| **Pydantic v2 + pydantic-settings** | Domain schemas, intent validation, and environment configuration |
+| **SQLAlchemy 2 (async) + asyncpg** | Asynchronous ORM and high-performance PostgreSQL driver |
+| **Alembic** | Async database schema migrations |
+| **PostgreSQL 16 + btree_gist** | Relational database with exclusion constraints for double-booking protection |
+| **OpenAI Agents SDK** | Structured output parsing (adapter pending) |
+| **n8n** | Channel adapter forwarding WhatsApp messages to the API |
+| **Docker + Docker Compose** | Container runtime and local multi-service orchestration |
+| **uv** | Fast Python package and project manager |
+| **Ruff** | Fast Python linter and code formatter |
+| **Mypy (strict)** | Static type checking enforcing strict mode |
+| **pytest + pytest-asyncio + testcontainers** | Unit and integration testing against real PostgreSQL containers |
+| **pre-commit** | Git hooks enforcing style, linting, and type consistency |
+| **GitHub Actions** | Automated CI pipeline running lint, format, type-check, and tests |
 
 ## Target architecture
 
 ```mermaid
 flowchart LR
     channel["Channel / n8n"] -->|HTTP| api["FastAPI routers"]
-    api --> parser["IntentParser (LLM)"]
+    api --> idem["Idempotency check<br/>(processed_messages)"]
+    idem --> parser["IntentParser (LLM)"]
     parser -->|BookingIntent| service["BookingService"]
     api --> service
     service --> repos["Repositories"]
     repos --> db[("PostgreSQL")]
 ```
 
+n8n acts as an external channel adapter, receiving raw webhook events from WhatsApp, normalizing payloads, and forwarding HTTP requests to the API.
+
 The layers are `api` → `services` → `repositories` → `database`. External providers
 sit behind ports in `domain/ports.py` and are implemented in `integrations/`. The
 full design is in [docs/design-doc.md](docs/design-doc.md).
+
+### Double-booking protection
+
+Appointments are protected against concurrent double bookings directly at the database level using a PostgreSQL exclusion constraint with `btree_gist`:
+
+```sql
+EXCLUDE USING gist (
+    barber_id WITH =,
+    tstzrange(starts_at, ends_at, '[)') WITH &&
+)
+WHERE (status = 'confirmed');
+```
+
+This enforces mutual exclusion across overlapping intervals using half-open ranges `[)`, permitting adjacent appointments (e.g. 10:00–10:30 and 10:30–11:00) while rejecting overlapping bookings under concurrent requests with SQLSTATE `23P01`, which `AppointmentRepository` translates into a domain `SlotUnavailableError`. See [ADR 0002](docs/adr/0002-double-booking-exclusion-constraint.md) for full architectural rationale and trade-offs.
 
 ## Quick start (Docker)
 
@@ -62,7 +99,7 @@ docker compose up -d db                   # start only PostgreSQL
 uv run uvicorn booking_agent.main:create_app --factory --reload
 ```
 
-Migrations (no tables exist yet):
+Database migrations:
 
 ```bash
 uv run alembic upgrade head
@@ -107,8 +144,8 @@ docs/                    # Design doc and ADRs
 ## Roadmap
 
 - [x] Scaffold: layout, tooling, CI, Docker, health checks, `IntentParser` port
-- [ ] Schema and repositories (customers, services, appointments, conversation_state)
-- [ ] Double-booking protection with a PostgreSQL exclusion constraint
+- [x] Schema and repositories (customers, services, barbers, appointments, conversation_states, processed_messages)
+- [x] Double-booking protection with a PostgreSQL exclusion constraint
 - [ ] `BookingService`: availability, book, reschedule, cancel
 - [ ] OpenAI structured-output adapter + evaluation set
 - [ ] Conversation state machine and message endpoint
