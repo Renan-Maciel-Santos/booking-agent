@@ -4,6 +4,7 @@ Services depend on these Protocols, never on concrete adapters or repositories,
 so dependencies always point inwards (Dependency Inversion Principle).
 """
 
+from datetime import datetime
 from typing import Protocol
 
 from booking_agent.domain.booking_intent import BookingIntent
@@ -36,4 +37,16 @@ class DatabaseHealthChecker(Protocol):
 
     async def ping(self) -> None:
         """Raise if the database cannot be reached."""
+        ...
+
+
+class Clock(Protocol):
+    """Port for time-dependent operations.
+
+    Implemented by booking_agent.integrations.system_clock.SystemClock in production,
+    and by test doubles (e.g. FakeClock) in tests.
+    """
+
+    def now(self) -> datetime:
+        """Return the current timezone-aware datetime in UTC."""
         ...
