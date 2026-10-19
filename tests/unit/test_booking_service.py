@@ -280,6 +280,31 @@ async def test_book_outside_business_hours(
         await service_obj.book("+5511999990001", "Alice", service.id, late_dt, barber1.id)
 
 
+async def test_book_preserves_existing_customer_name(
+    base_settings: Settings,
+    fake_clock: FakeClock,
+    populated_store: tuple[InMemoryDataStore, Barber, Barber, Service, Customer],
+) -> None:
+    """Verify that booking with an existing phone number does not overwrite their name."""
+    store, barber1, _, service, existing_customer = populated_store
+    service_obj = BookingService(FakeUnitOfWorkFactory(store), fake_clock, base_settings)
+
+    target_dt = datetime(2026, 10, 21, 13, 0, tzinfo=UTC)  # Wednesday 10:00 Sao Paulo
+
+    # Attempt to book using existing_customer's phone, but a different name (e.g. spouse/child)
+    result = await service_obj.book(
+        customer_phone=existing_customer.phone,
+        customer_name="Alice (Spouse)",
+        service_id=service.id,
+        starts_at=target_dt,
+        barber_id=barber1.id,
+    )
+
+    assert result.appointment.customer_id == existing_customer.id
+    # The persisted customer name remains the original "Bob"
+    assert store.customers[existing_customer.id].name == "Bob"
+
+
 async def test_book_deterministic_any_barber(
     base_settings: Settings,
     fake_clock: FakeClock,
