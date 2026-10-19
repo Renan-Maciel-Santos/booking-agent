@@ -334,7 +334,7 @@ flowchart LR
   8. Resolve barber assignment:
      - If `barber_id` is provided, verify barber is active.
      - If `barber_id is None` ("any barber"), query active barbers and deterministically select the first barber who has no overlapping confirmed booking for that slot (ordered by name, then id). If none is available, raise `SlotUnavailableError`.
-  9. Ensure customer profile exists: find by `phone` or create customer JIT with `customer_name`.
+  9. Ensure customer profile exists: find by `phone` or create customer JIT with `customer_name`. If a customer already exists with this phone number, their registered name is preserved and NOT overwritten (to support scenarios like shared family phones or landlines where different household members book appointments).
   10. Attempt to persist the appointment inside a unit of work context manager:
       `AppointmentRepository.create(...)`.
   11. **Conflict Recovery via Unit of Work**:

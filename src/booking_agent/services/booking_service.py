@@ -346,14 +346,13 @@ class BookingService:
                             )
                             break
 
-                    # Ensure customer profile exists or create JIT
+                    # Ensure customer profile exists or create JIT. Preserve existing name
+                    # if the profile already exists (e.g. shared family phones).
                     customer = await uow.customers.get_by_phone(customer_phone)
                     if customer is None:
                         customer = await uow.customers.create(
                             name=customer_name, phone=customer_phone
                         )
-                    elif customer.name != customer_name:
-                        await uow.customers.update_name(customer.id, customer_name)
 
                     if selected_barber_id is None:
                         raise BarberNotFoundError("No active barbers available.")
