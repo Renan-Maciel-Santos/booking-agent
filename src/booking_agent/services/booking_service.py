@@ -354,9 +354,6 @@ class BookingService:
                             name=customer_name, phone=customer_phone
                         )
 
-                    if selected_barber_id is None:
-                        raise BarberNotFoundError("No active barbers available.")
-
                     # Create appointment (exclusion constraint protects against concurrent races)
                     appt = await uow.appointments.create(
                         customer_id=customer.id,
