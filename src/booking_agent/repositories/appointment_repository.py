@@ -28,7 +28,14 @@ def _is_exclusion_violation(exc: IntegrityError) -> bool:
 
 
 class AppointmentRepository:
-    """Repository managing Appointment persistence."""
+    """Repository managing Appointment persistence and slot exclusivity checks.
+
+    Note on Transaction Abort:
+        When a SlotUnavailableError is raised (due to PostgreSQL exclusion_violation 23P01),
+        PostgreSQL marks the active transaction as aborted (InFailedSqlTransaction).
+        The caller must roll back the transaction (e.g. by exiting the unit of work)
+        before executing any subsequent queries on the database.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         """Store the injected session.
@@ -64,6 +71,41 @@ class AppointmentRepository:
         result = await self._session.execute(stmt)
         return result.scalars().all()
 
+    async def list_by_barber_and_window(
+        self,
+        barber_id: uuid.UUID,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> Sequence[Appointment]:
+        """Fetch confirmed appointments for a barber overlapping a time window.
+
+        Uses PostgreSQL's half-open range overlap operator (&&) to find appointments
+        where [starts_at, ends_at) overlaps [window_start, window_end). This query
+        can be accelerated by PostgreSQL's query planner using the GiST index created
+        by the exclusion constraint appointments_barber_slot_excl.
+
+        Args:
+            barber_id: Schedulable barber resource ID.
+            window_start: Start boundary of the time window in UTC (inclusive).
+            window_end: End boundary of the time window in UTC (exclusive).
+
+        Returns:
+            Sequence of confirmed appointments overlapping the window, ordered by starts_at.
+        """
+        stmt = (
+            select(Appointment)
+            .where(
+                Appointment.barber_id == barber_id,
+                Appointment.status == AppointmentStatus.CONFIRMED.value,
+                func.tstzrange(Appointment.starts_at, Appointment.ends_at, "[)").op("&&")(
+                    func.tstzrange(window_start, window_end, "[)")
+                ),
+            )
+            .order_by(Appointment.starts_at)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalars().all()
+
     async def create(
         self,
         customer_id: uuid.UUID,
@@ -79,6 +121,10 @@ class AppointmentRepository:
 
         Converts PostgreSQL exclusion_violation (SQLSTATE 23P01) into SlotUnavailableError,
         preserving the underlying exception cause.
+
+        Note on Transaction Abort:
+            If SlotUnavailableError is raised, PostgreSQL aborts the transaction. The caller
+            must roll back (or exit the active unit of work) before issuing subsequent queries.
 
         Args:
             customer_id: Foreign key to customer.
@@ -119,6 +165,53 @@ class AppointmentRepository:
             raise
 
         return appointment
+
+    async def reschedule(
+        self,
+        appointment_id: uuid.UUID,
+        starts_at: datetime,
+        ends_at: datetime,
+    ) -> Appointment | None:
+        """Reschedule an existing appointment by updating starts_at and ends_at in-place.
+
+        Converts PostgreSQL exclusion_violation (SQLSTATE 23P01) into SlotUnavailableError.
+        Because exclusion constraints evaluate an updated tuple against all *other* matching
+        rows, shifting an appointment to a slot that partially overlaps with its own previous
+        slot does not trigger a self-collision.
+
+        Note on Transaction Abort:
+            When a SlotUnavailableError is raised, PostgreSQL marks the transaction as aborted.
+            The caller must roll back the transaction (or exit the unit of work context manager)
+            before issuing any further database commands.
+
+        Args:
+            appointment_id: ID of the appointment to update.
+            starts_at: New start time in UTC.
+            ends_at: New end time in UTC.
+
+        Returns:
+            Updated appointment or None if not found.
+
+        Raises:
+            SlotUnavailableError: If the new slot overlaps another confirmed appointment
+                for the barber.
+        """
+        stmt = (
+            update(Appointment)
+            .where(Appointment.id == appointment_id)
+            .values(starts_at=starts_at, ends_at=ends_at, updated_at=func.now())
+            .returning(Appointment)
+            .execution_options(populate_existing=True)
+        )
+        try:
+            result = await self._session.execute(stmt)
+            await self._session.flush()
+        except IntegrityError as exc:
+            if _is_exclusion_violation(exc):
+                slot_repr = f"[{starts_at.isoformat()}, {ends_at.isoformat()})"
+                raise SlotUnavailableError(f"Slot {slot_repr} is unavailable.") from exc
+            raise
+        return result.scalar_one_or_none()
 
     async def cancel(self, appointment_id: uuid.UUID) -> Appointment | None:
         """Mark an appointment as cancelled and refresh updated_at.
