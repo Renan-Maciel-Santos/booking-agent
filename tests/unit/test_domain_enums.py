@@ -1,0 +1,29 @@
+"""Unit tests for domain enums."""
+
+from booking_agent.domain.enums import AppointmentStatus, MessageStatus
+
+
+def test_appointment_status_values() -> None:
+    """Verify AppointmentStatus enum members and string values."""
+    assert AppointmentStatus.CONFIRMED.value == "confirmed"
+    assert AppointmentStatus.CANCELLED.value == "cancelled"
+    assert AppointmentStatus.COMPLETED.value == "completed"
+    assert AppointmentStatus("confirmed") is AppointmentStatus.CONFIRMED
+    assert set(AppointmentStatus) == {
+        AppointmentStatus.CONFIRMED,
+        AppointmentStatus.CANCELLED,
+        AppointmentStatus.COMPLETED,
+    }
+
+
+def test_message_status_values() -> None:
+    """Verify MessageStatus enum members and string values."""
+    assert MessageStatus.PROCESSING.value == "processing"
+    assert MessageStatus.DONE.value == "done"
+    assert MessageStatus.FAILED.value == "failed"
+    assert MessageStatus("processing") is MessageStatus.PROCESSING
+    assert set(MessageStatus) == {
+        MessageStatus.PROCESSING,
+        MessageStatus.DONE,
+        MessageStatus.FAILED,
+    }

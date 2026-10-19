@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from booking_agent.database.models import Appointment
+from booking_agent.domain.enums import AppointmentStatus
 from booking_agent.domain.errors import SlotUnavailableError
 
 # PostgreSQL error code for exclusion_violation
@@ -71,7 +72,7 @@ class AppointmentRepository:
         starts_at: datetime,
         ends_at: datetime,
         price_cents: int,
-        status: str = "confirmed",
+        status: AppointmentStatus = AppointmentStatus.CONFIRMED,
         appointment_id: uuid.UUID | None = None,
     ) -> Appointment:
         """Create and flush an appointment.
@@ -86,7 +87,7 @@ class AppointmentRepository:
             starts_at: Appointment start time in UTC.
             ends_at: Appointment end time in UTC.
             price_cents: Price frozen at booking time.
-            status: Appointment status ('confirmed', 'cancelled', 'completed').
+            status: AppointmentStatus enum value.
             appointment_id: Optional explicit UUID.
 
         Returns:
@@ -104,7 +105,7 @@ class AppointmentRepository:
             starts_at=starts_at,
             ends_at=ends_at,
             price_cents=price_cents,
-            status=status,
+            status=status.value if isinstance(status, AppointmentStatus) else status,
         )
         self._session.add(appointment)
         try:
@@ -131,7 +132,7 @@ class AppointmentRepository:
         stmt = (
             update(Appointment)
             .where(Appointment.id == appointment_id)
-            .values(status="cancelled", updated_at=func.now())
+            .values(status=AppointmentStatus.CANCELLED.value, updated_at=func.now())
             .returning(Appointment)
             .execution_options(populate_existing=True)
         )

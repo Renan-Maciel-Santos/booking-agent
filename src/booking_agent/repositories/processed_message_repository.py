@@ -4,17 +4,18 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from booking_agent.database.models import ProcessedMessage
+from booking_agent.domain.enums import MessageStatus
 
 _ACQUIRE_STATEMENT = text(
     """
     INSERT INTO processed_messages (message_id, status, created_at, updated_at)
-    VALUES (:message_id, 'processing', now(), now())
+    VALUES (:message_id, :status_processing, now(), now())
     ON CONFLICT (message_id) DO UPDATE
-    SET status = 'processing',
+    SET status = :status_processing,
         updated_at = now()
-    WHERE processed_messages.status = 'failed'
+    WHERE processed_messages.status = :status_failed
        OR (
-           processed_messages.status = 'processing'
+           processed_messages.status = :status_processing
            AND processed_messages.updated_at < now() - make_interval(secs => :timeout_seconds)
        )
     RETURNING message_id
@@ -24,7 +25,7 @@ _ACQUIRE_STATEMENT = text(
 _MARK_DONE_STATEMENT = text(
     """
     UPDATE processed_messages
-    SET status = 'done', updated_at = now()
+    SET status = :status_done, updated_at = now()
     WHERE message_id = :message_id
     RETURNING message_id
     """
@@ -33,7 +34,7 @@ _MARK_DONE_STATEMENT = text(
 _MARK_FAILED_STATEMENT = text(
     """
     UPDATE processed_messages
-    SET status = 'failed', updated_at = now()
+    SET status = :status_failed, updated_at = now()
     WHERE message_id = :message_id
     RETURNING message_id
     """
@@ -73,7 +74,12 @@ class ProcessedMessageRepository:
         """
         result = await self._session.execute(
             _ACQUIRE_STATEMENT,
-            {"message_id": message_id, "timeout_seconds": timeout_seconds},
+            {
+                "message_id": message_id,
+                "timeout_seconds": timeout_seconds,
+                "status_processing": MessageStatus.PROCESSING.value,
+                "status_failed": MessageStatus.FAILED.value,
+            },
         )
         await self._session.flush()
         return result.scalar_one_or_none() is not None
@@ -87,7 +93,10 @@ class ProcessedMessageRepository:
         Returns:
             True if row was updated, False if message_id not found.
         """
-        result = await self._session.execute(_MARK_DONE_STATEMENT, {"message_id": message_id})
+        result = await self._session.execute(
+            _MARK_DONE_STATEMENT,
+            {"message_id": message_id, "status_done": MessageStatus.DONE.value},
+        )
         await self._session.flush()
         return result.scalar_one_or_none() is not None
 
@@ -100,6 +109,9 @@ class ProcessedMessageRepository:
         Returns:
             True if row was updated, False if message_id not found.
         """
-        result = await self._session.execute(_MARK_FAILED_STATEMENT, {"message_id": message_id})
+        result = await self._session.execute(
+            _MARK_FAILED_STATEMENT,
+            {"message_id": message_id, "status_failed": MessageStatus.FAILED.value},
+        )
         await self._session.flush()
         return result.scalar_one_or_none() is not None
