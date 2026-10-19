@@ -1,8 +1,9 @@
 """Application settings loaded exclusively from environment variables."""
 
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +29,22 @@ class Settings(BaseSettings):
 
     db_health_timeout_seconds: float = Field(default=2.0, gt=0)
     db_pool_size: int = Field(default=5, ge=1)
+
+    # Business operating rules and scheduling settings
+    business_timezone: str = "America/Sao_Paulo"
+    slot_granularity_minutes: int = Field(default=15, ge=1)
+    min_booking_advance_minutes: int = Field(default=60, ge=0)
+    max_booking_horizon_days: int = Field(default=30, ge=1)
+
+    @field_validator("business_timezone")
+    @classmethod
+    def validate_timezone(cls, v: str) -> str:
+        """Ensure business_timezone is a valid IANA timezone."""
+        try:
+            ZoneInfo(v)
+        except Exception as exc:
+            raise ValueError(f"Invalid IANA timezone: {v}") from exc
+        return v
 
     # A plain property (not a computed_field) keeps the URL, which embeds the
     # password, out of repr() and model_dump().

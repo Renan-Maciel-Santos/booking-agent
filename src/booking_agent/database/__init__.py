@@ -4,6 +4,7 @@ from booking_agent.database.base import Base
 from booking_agent.database.models import (
     Appointment,
     Barber,
+    BusinessHours,
     ConversationState,
     Customer,
     ProcessedMessage,
@@ -14,6 +15,7 @@ __all__ = [
     "Appointment",
     "Barber",
     "Base",
+    "BusinessHours",
     "ConversationState",
     "Customer",
     "ProcessedMessage",

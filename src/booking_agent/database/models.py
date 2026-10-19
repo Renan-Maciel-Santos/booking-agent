@@ -1,11 +1,21 @@
 """SQLAlchemy declarative models for the booking agent domain."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    Time,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ExcludeConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -236,4 +246,32 @@ class ProcessedMessage(Base):
             "status IN ('processing', 'done', 'failed')",
             name="status_valid",
         ),
+    )
+
+
+class BusinessHours(Base):
+    """Operating hours for the business by day of the week.
+
+    A day without a record represents a closed day.
+    """
+
+    __tablename__ = "business_hours"
+
+    day_of_week: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    opens_at: Mapped[time] = mapped_column(Time, nullable=False)
+    closes_at: Mapped[time] = mapped_column(Time, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    )
+
+    __table_args__ = (
+        CheckConstraint("day_of_week BETWEEN 0 AND 6", name="ck_business_hours_day_of_week_range"),
+        CheckConstraint("closes_at > opens_at", name="ck_business_hours_closes_after_opens"),
     )

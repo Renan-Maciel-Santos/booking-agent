@@ -18,3 +18,19 @@ def test_password_is_masked_in_repr() -> None:
     # Assert the secret never leaks through repr or serialization (logs, tracebacks).
     assert "test_password" not in repr(settings)
     assert "test_password" not in str(settings.model_dump())
+
+
+def test_business_settings_defaults() -> None:
+    settings = build_test_settings()
+    assert settings.business_timezone == "America/Sao_Paulo"
+    assert settings.slot_granularity_minutes == 15
+    assert settings.min_booking_advance_minutes == 60
+    assert settings.max_booking_horizon_days == 30
+
+
+def test_invalid_timezone_raises_validation_error() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Invalid IANA timezone"):
+        build_test_settings(business_timezone="Invalid/Timezone_Name")
