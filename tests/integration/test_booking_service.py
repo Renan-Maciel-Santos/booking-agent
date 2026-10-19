@@ -6,11 +6,11 @@ from datetime import UTC, date, datetime, time
 from typing import Self
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from booking_agent.config import Settings
-from booking_agent.database.models import Appointment, Barber
+from booking_agent.database.models import Appointment
 from booking_agent.database.unit_of_work import (
     SqlAlchemyUnitOfWork,
     SqlAlchemyUnitOfWorkFactory,
@@ -199,9 +199,6 @@ async def test_any_barber_assignment_and_availability_union(
         # Create two barbers with deterministic names
         b_alpha = await BarberRepository(session).create(name=f"Alpha_{uuid.uuid4().hex[:6]}")
         b_beta = await BarberRepository(session).create(name=f"Beta_{uuid.uuid4().hex[:6]}")
-        # Deactivate any other barbers in the test container so only Alpha and Beta are active
-        stmt = update(Barber).where(Barber.id.notin_([b_alpha.id, b_beta.id])).values(active=False)
-        await session.execute(stmt)
         service = await ServiceRepository(session).create(
             name=f"Shave_{uuid.uuid4().hex[:6]}", duration_minutes=30, price_cents=2500
         )
@@ -250,9 +247,9 @@ async def test_any_barber_retry_on_concurrent_conflict(
     """Verify any-barber booking retries next free barber in new UoW when first suffers conflict."""
     async with session_factory() as session:
         await _setup_business_schedule(session)
-        # Create two barbers with names sorting first alphabetically
-        b_alpha = await BarberRepository(session).create(name=f"0000_Alpha_{uuid.uuid4().hex[:6]}")
-        b_beta = await BarberRepository(session).create(name=f"0001_Beta_{uuid.uuid4().hex[:6]}")
+        # Create two barbers with deterministic names
+        b_alpha = await BarberRepository(session).create(name=f"Alpha_{uuid.uuid4().hex[:6]}")
+        b_beta = await BarberRepository(session).create(name=f"Beta_{uuid.uuid4().hex[:6]}")
         service = await ServiceRepository(session).create(
             name=f"Trim_{uuid.uuid4().hex[:6]}", duration_minutes=30, price_cents=3000
         )
