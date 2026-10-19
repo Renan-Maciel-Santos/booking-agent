@@ -1,12 +1,13 @@
 """Integration tests for BusinessHoursRepository and seeds."""
 
 from datetime import time
+from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from booking_agent.database.seeds import seed_demo_business_hours
 from booking_agent.repositories.business_hours_repository import BusinessHoursRepository
 
 
@@ -58,8 +59,11 @@ async def test_business_hours_closes_before_opens_rejected(session: AsyncSession
 
 
 async def test_seed_demo_business_hours(session: AsyncSession) -> None:
-    """Verify demo seed populates Tuesday through Saturday."""
-    await seed_demo_business_hours(session)
+    """Verify demo seed SQL file populates Tuesday through Saturday."""
+    seed_path = Path(__file__).parents[2] / "db" / "seeds" / "business_hours.sql"
+    sql = seed_path.read_text(encoding="utf-8")
+    await session.execute(text(sql))
+    await session.commit()
     repo = BusinessHoursRepository(session)
 
     # Monday (0) and Sunday (6) are closed (None)

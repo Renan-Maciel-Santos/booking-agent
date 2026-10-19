@@ -99,11 +99,14 @@ docker compose up -d db                   # start only PostgreSQL
 uv run uvicorn booking_agent.main:create_app --factory --reload
 ```
 
-Database migrations:
+Database migrations and seeds:
 
 ```bash
 uv run alembic upgrade head
 uv run alembic revision --autogenerate -m "describe change"
+
+# Populate demo business hours (Tuesday–Saturday 09:00–19:00):
+docker compose exec -T db psql -U postgres -d postgres < db/seeds/business_hours.sql
 ```
 
 ## Tests and quality checks
