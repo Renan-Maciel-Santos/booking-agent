@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from booking_agent.config import Settings
-from booking_agent.database.models import Barber, BusinessHours, Customer, Service
+from booking_agent.database.models import Appointment, Barber, BusinessHours, Customer, Service
 from booking_agent.domain.enums import AppointmentStatus
 from booking_agent.domain.errors import (
     AppointmentInThePastError,
@@ -23,7 +23,7 @@ from booking_agent.domain.errors import (
 from booking_agent.services.booking_service import BookingService, localize_datetime
 from tests.conftest import build_test_settings
 from tests.fakes.fake_clock import FakeClock
-from tests.fakes.fake_uow import FakeUnitOfWorkFactory, InMemoryDataStore
+from tests.fakes.fake_uow import FakeAppointmentRepository, FakeUnitOfWorkFactory, InMemoryDataStore
 
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -308,6 +308,54 @@ async def test_book_deterministic_any_barber(
     with pytest.raises(SlotUnavailableError) as exc_info:
         await service_obj.book("+5511999993333", "Client 3", service.id, target_dt, barber_id=None)
     assert len(exc_info.value.alternatives) > 0
+
+
+async def test_book_any_barber_retries_next_barber_on_conflict(
+    base_settings: Settings,
+    fake_clock: FakeClock,
+    populated_store: tuple[InMemoryDataStore, Barber, Barber, Service, Customer],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify book with barber_id=None tries next free barber when first fails on insert."""
+    store, barber1, barber2, service, _ = populated_store
+    service_obj = BookingService(FakeUnitOfWorkFactory(store), fake_clock, base_settings)
+
+    target_dt = datetime(2026, 10, 21, 13, 0, tzinfo=UTC)
+
+    # Simulate race-condition conflict specifically on barber1 insert
+    orig_create = FakeAppointmentRepository.create
+
+    async def fail_barber1_create(
+        self: FakeAppointmentRepository,
+        customer_id: uuid.UUID,
+        service_id: uuid.UUID,
+        barber_id: uuid.UUID,
+        starts_at: datetime,
+        ends_at: datetime,
+        price_cents: int,
+        status: AppointmentStatus = AppointmentStatus.CONFIRMED,
+        appointment_id: uuid.UUID | None = None,
+    ) -> Appointment:
+        if barber_id == barber1.id:
+            raise SlotUnavailableError("Simulated concurrent race on barber 1.")
+        return await orig_create(
+            self,
+            customer_id=customer_id,
+            service_id=service_id,
+            barber_id=barber_id,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            price_cents=price_cents,
+            status=status,
+            appointment_id=appointment_id,
+        )
+
+    monkeypatch.setattr(FakeAppointmentRepository, "create", fail_barber1_create)
+
+    result = await service_obj.book(
+        "+5511999990001", "Client", service.id, target_dt, barber_id=None
+    )
+    assert result.appointment.barber_id == barber2.id
 
 
 async def test_book_conflict_rollback_and_alternatives(

@@ -286,94 +286,120 @@ class BookingService:
                 f"of {max_horizon_days} days."
             )
 
-        try:
-            async with self._uow_factory() as uow:
-                service = await uow.services.get_by_id(service_id)
-                if service is None or not service.active:
-                    raise ServiceNotFoundError(f"Service {service_id} not found or inactive.")
+        attempted_barber_ids: set[uuid.UUID] = set()
+        last_conflict_exc: SlotUnavailableError | None = None
 
-                hours = await uow.business_hours.get_by_day(local_date.weekday())
-                if hours is None:
-                    day_name = local_date.strftime("%A")
-                    raise OutsideBusinessHoursError(
-                        f"Salon is closed on {day_name} ({local_date.isoformat()})."
-                    )
+        while True:
+            selected_barber_id: uuid.UUID | None = None
+            try:
+                async with self._uow_factory() as uow:
+                    service = await uow.services.get_by_id(service_id)
+                    if service is None or not service.active:
+                        raise ServiceNotFoundError(f"Service {service_id} not found or inactive.")
 
-                duration = timedelta(minutes=service.duration_minutes)
-                ends_at_local = starts_at_local + duration
-                if (
-                    starts_at_local.time() < hours.opens_at
-                    or ends_at_local.time() > hours.closes_at
-                    or ends_at_local.date() != local_date
-                ):
-                    raise OutsideBusinessHoursError(
-                        f"Slot [{starts_at_local.time()}, {ends_at_local.time()}) is outside "
-                        f"business hours [{hours.opens_at}, {hours.closes_at})."
-                    )
-
-                ends_at_utc = starts_at_utc + duration
-
-                # Resolve barber assignment
-                if barber_id is not None:
-                    barber = await uow.barbers.get_by_id(barber_id)
-                    if barber is None or not barber.active:
-                        raise BarberNotFoundError(f"Barber {barber_id} not found or inactive.")
-                    selected_barber_id = barber_id
-                else:
-                    active_barbers = list(await uow.barbers.list_active())
-                    if not active_barbers:
-                        raise BarberNotFoundError("No active barbers available.")
-
-                    selected_barber_id = None
-                    for b in active_barbers:
-                        conflicts = await uow.appointments.list_by_barber_and_window(
-                            b.id, starts_at_utc, ends_at_utc
+                    hours = await uow.business_hours.get_by_day(local_date.weekday())
+                    if hours is None:
+                        day_name = local_date.strftime("%A")
+                        raise OutsideBusinessHoursError(
+                            f"Salon is closed on {day_name} ({local_date.isoformat()})."
                         )
-                        if not conflicts:
-                            selected_barber_id = b.id
+
+                    duration = timedelta(minutes=service.duration_minutes)
+                    ends_at_local = starts_at_local + duration
+                    if (
+                        starts_at_local.time() < hours.opens_at
+                        or ends_at_local.time() > hours.closes_at
+                        or ends_at_local.date() != local_date
+                    ):
+                        raise OutsideBusinessHoursError(
+                            f"Slot [{starts_at_local.time()}, {ends_at_local.time()}) is outside "
+                            f"business hours [{hours.opens_at}, {hours.closes_at})."
+                        )
+
+                    ends_at_utc = starts_at_utc + duration
+
+                    # Resolve barber assignment
+                    if barber_id is not None:
+                        barber = await uow.barbers.get_by_id(barber_id)
+                        if barber is None or not barber.active:
+                            raise BarberNotFoundError(f"Barber {barber_id} not found or inactive.")
+                        selected_barber_id = barber_id
+                    else:
+                        active_barbers = list(await uow.barbers.list_active())
+                        if not active_barbers:
+                            raise BarberNotFoundError("No active barbers available.")
+
+                        for b in active_barbers:
+                            if b.id in attempted_barber_ids:
+                                continue
+                            conflicts = await uow.appointments.list_by_barber_and_window(
+                                b.id, starts_at_utc, ends_at_utc
+                            )
+                            if not conflicts:
+                                selected_barber_id = b.id
+                                break
+
+                        if selected_barber_id is None:
+                            last_conflict_exc = SlotUnavailableError(
+                                f"No barber is available between {starts_at.isoformat()} "
+                                f"and {ends_at_local.isoformat()}."
+                            )
                             break
 
-                    if selected_barber_id is None:
-                        raise SlotUnavailableError(
-                            f"No barber is available between {starts_at.isoformat()} "
-                            f"and {ends_at_local.isoformat()}."
+                    # Ensure customer profile exists or create JIT
+                    customer = await uow.customers.get_by_phone(customer_phone)
+                    if customer is None:
+                        customer = await uow.customers.create(
+                            name=customer_name, phone=customer_phone
                         )
+                    elif customer.name != customer_name:
+                        await uow.customers.update_name(customer.id, customer_name)
 
-                # Ensure customer profile exists or create JIT
-                customer = await uow.customers.get_by_phone(customer_phone)
-                if customer is None:
-                    customer = await uow.customers.create(name=customer_name, phone=customer_phone)
-                elif customer.name != customer_name:
-                    await uow.customers.update_name(customer.id, customer_name)
+                    if selected_barber_id is None:
+                        raise BarberNotFoundError("No active barbers available.")
 
-                if selected_barber_id is None:
-                    raise BarberNotFoundError("No active barbers available.")
+                    # Create appointment (exclusion constraint protects against concurrent races)
+                    appt = await uow.appointments.create(
+                        customer_id=customer.id,
+                        service_id=service.id,
+                        barber_id=selected_barber_id,
+                        starts_at=starts_at_utc,
+                        ends_at=ends_at_utc,
+                        price_cents=service.price_cents,
+                    )
+                    return BookingResult(appointment=appt)
 
-                # Create appointment (exclusion constraint protects against concurrent races)
-                appt = await uow.appointments.create(
-                    customer_id=customer.id,
-                    service_id=service.id,
-                    barber_id=selected_barber_id,
-                    starts_at=starts_at_utc,
-                    ends_at=ends_at_utc,
-                    price_cents=service.price_cents,
+            except SlotUnavailableError as exc:
+                last_conflict_exc = exc
+                if barber_id is not None:
+                    break
+                if selected_barber_id is not None:
+                    attempted_barber_ids.add(selected_barber_id)
+                logger.info(
+                    "Conflict on barber %s for slot %s; retrying next free barber.",
+                    selected_barber_id,
+                    starts_at_utc.isoformat(),
                 )
-                return BookingResult(appointment=appt)
+                continue
 
-        except SlotUnavailableError as exc:
-            # UoW context manager has rolled back and closed the aborted transaction.
-            # Query alternatives in a new unit of work session:
-            logger.info("Conflict on slot %s; querying alternatives.", starts_at_utc.isoformat())
-            alt_result = await self.list_availability(
-                service_id=service_id,
-                target_date=local_date,
-                barber_id=barber_id,
-            )
-            alternatives = [s for s in alt_result.slots if s != starts_at_local][:3]
+        # UoW context manager has rolled back and closed the aborted transaction.
+        # Query alternatives in a new unit of work session:
+        logger.info("Conflict on slot %s; querying alternatives.", starts_at_utc.isoformat())
+        alt_result = await self.list_availability(
+            service_id=service_id,
+            target_date=local_date,
+            barber_id=barber_id,
+        )
+        alternatives = list(alt_result.slots[:3])
+        if last_conflict_exc is not None:
             raise SlotUnavailableError(
                 "Requested appointment slot is unavailable.",
                 alternatives=alternatives,
-            ) from exc
+            ) from last_conflict_exc
+        raise SlotUnavailableError(
+            "Requested appointment slot is unavailable.",
+            alternatives=alternatives,
+        )
 
     async def reschedule(
         self,
@@ -510,7 +536,7 @@ class BookingService:
                     target_date=local_date,
                     barber_id=appt_barber_id,
                 )
-                alternatives = [s for s in alt_result.slots if s != new_starts_at_local][:3]
+                alternatives = list(alt_result.slots[:3])
             raise SlotUnavailableError(
                 "Requested reschedule slot is unavailable.",
                 alternatives=alternatives,

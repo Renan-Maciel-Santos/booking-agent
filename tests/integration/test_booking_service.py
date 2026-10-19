@@ -3,6 +3,7 @@
 import asyncio
 import uuid
 from datetime import UTC, date, datetime, time
+from typing import Self
 
 import pytest
 from sqlalchemy import select, update
@@ -10,9 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from booking_agent.config import Settings
 from booking_agent.database.models import Appointment, Barber
-from booking_agent.database.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from booking_agent.database.unit_of_work import (
+    SqlAlchemyUnitOfWork,
+    SqlAlchemyUnitOfWorkFactory,
+)
+from booking_agent.domain.enums import AppointmentStatus
 from booking_agent.domain.errors import SlotUnavailableError
 from booking_agent.domain.models import BookingResult
+from booking_agent.repositories.appointment_repository import AppointmentRepository
 from booking_agent.repositories.barber_repository import BarberRepository
 from booking_agent.repositories.business_hours_repository import BusinessHoursRepository
 from booking_agent.repositories.customer_repository import CustomerRepository
@@ -235,3 +241,104 @@ async def test_any_barber_assignment_and_availability_union(
     assert len(exc_info.value.alternatives) > 0
     contested_local = target_slot.astimezone(booking_service.business_timezone)
     assert contested_local not in exc_info.value.alternatives
+
+
+async def test_any_barber_retry_on_concurrent_conflict(
+    session_factory: async_sessionmaker[AsyncSession],
+    integration_settings: Settings,
+) -> None:
+    """Verify any-barber booking retries next free barber in new UoW when first suffers conflict."""
+    async with session_factory() as session:
+        await _setup_business_schedule(session)
+        # Create two barbers with names sorting first alphabetically
+        b_alpha = await BarberRepository(session).create(name=f"0000_Alpha_{uuid.uuid4().hex[:6]}")
+        b_beta = await BarberRepository(session).create(name=f"0001_Beta_{uuid.uuid4().hex[:6]}")
+        service = await ServiceRepository(session).create(
+            name=f"Trim_{uuid.uuid4().hex[:6]}", duration_minutes=30, price_cents=3000
+        )
+        phone = f"+55119{uuid.uuid4().int % 100000000:08d}"
+        await session.commit()
+
+    clock = FakeClock(datetime(2026, 11, 17, 12, 0, tzinfo=UTC))
+    target_slot = datetime(2026, 11, 17, 14, 0, tzinfo=UTC)  # 11:00 Sao Paulo
+
+    interfered_flag: list[bool] = []
+
+    class InterceptingAppointmentRepository(AppointmentRepository):
+        async def create(
+            self,
+            customer_id: uuid.UUID,
+            service_id: uuid.UUID,
+            barber_id: uuid.UUID,
+            starts_at: datetime,
+            ends_at: datetime,
+            price_cents: int,
+            status: AppointmentStatus = AppointmentStatus.CONFIRMED,
+            appointment_id: uuid.UUID | None = None,
+        ) -> Appointment:
+            if barber_id == b_alpha.id and not interfered_flag:
+                interfered_flag.append(True)
+                # Concurrently reserve b_alpha via another session and commit to PostgreSQL
+                async with session_factory() as concurrent_session:
+                    other_cust = await CustomerRepository(concurrent_session).create(
+                        name="Interloper",
+                        phone=f"+55119{uuid.uuid4().int % 100000000:08d}",
+                    )
+                    await AppointmentRepository(concurrent_session).create(
+                        customer_id=other_cust.id,
+                        service_id=service_id,
+                        barber_id=b_alpha.id,
+                        starts_at=starts_at,
+                        ends_at=ends_at,
+                        price_cents=price_cents,
+                        status=status,
+                    )
+                    await concurrent_session.commit()
+
+            return await super().create(
+                customer_id=customer_id,
+                service_id=service_id,
+                barber_id=barber_id,
+                starts_at=starts_at,
+                ends_at=ends_at,
+                price_cents=price_cents,
+                status=status,
+                appointment_id=appointment_id,
+            )
+
+    class InterceptingUnitOfWork(SqlAlchemyUnitOfWork):
+        async def __aenter__(self) -> Self:
+            await super().__aenter__()
+            assert self._session is not None
+            self._appointments = InterceptingAppointmentRepository(self._session)
+            return self
+
+    booking_service = BookingService(
+        lambda: InterceptingUnitOfWork(session_factory),
+        clock,
+        integration_settings,
+    )
+
+    result = await booking_service.book(
+        phone, "Target Client", service.id, target_slot, barber_id=None
+    )
+
+    assert len(interfered_flag) == 1
+    # Successfully retried in a new unit of work and selected the second barber
+    assert result.appointment.barber_id == b_beta.id
+
+    # Verify both appointments are persisted in PostgreSQL
+    async with session_factory() as session:
+        appts = (
+            (
+                await session.execute(
+                    select(Appointment).where(
+                        Appointment.starts_at == target_slot,
+                        Appointment.barber_id.in_([b_alpha.id, b_beta.id]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(appts) == 2
