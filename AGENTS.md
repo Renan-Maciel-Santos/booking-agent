@@ -60,3 +60,17 @@ is written in **English**.
 - Never swallow errors from external services: propagate and handle them explicitly.
 - No test-specific logic or bypasses inside production code.
 - Never commit agent log files, status files, scratch files, or session artifacts to the repository.
+
+## Agent skills
+
+Project skills live in `.agent/skills/`. They take precedence over global skills
+when there is an overlap and must be followed:
+
+- `data-architecture`
+- `delivery-report`
+- `distinctive-frontend`
+- `git-workflow`
+- `llm-integration`
+- `observability`
+- `secure-backend`
+- `testing-strategy`
