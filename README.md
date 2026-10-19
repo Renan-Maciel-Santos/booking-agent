@@ -12,8 +12,8 @@ conflicts, rescheduling, cancellation) and all persistence run in a
 **deterministic Python service layer on PostgreSQL**. The rationale is in
 [ADR 0001](docs/adr/0001-llm-only-at-the-edge.md).
 
-> Status: schema, repositories and double-booking protection in place.
-> Domain services land in the next PRs (see [Roadmap](#roadmap)).
+> Status: BookingService implemented with deterministic scheduling, availability, and double-booking protection.
+> OpenAI adapter and conversation flows land in the next PRs (see [Roadmap](#roadmap)).
 
 ## Tech stack
 
@@ -146,7 +146,7 @@ docs/                    # Design doc and ADRs
 - [x] Scaffold: layout, tooling, CI, Docker, health checks, `IntentParser` port
 - [x] Schema and repositories (customers, services, barbers, appointments, conversation_states, processed_messages)
 - [x] Double-booking protection with a PostgreSQL exclusion constraint
-- [ ] `BookingService`: availability, book, reschedule, cancel
+- [x] `BookingService`: availability, book, reschedule, cancel
 - [ ] OpenAI structured-output adapter + evaluation set
 - [ ] Conversation state machine and message endpoint
 - [ ] Observability: request IDs, metrics, audit log
