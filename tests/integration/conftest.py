@@ -8,6 +8,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from docker.errors import DockerException
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 
@@ -89,3 +90,22 @@ async def session(session_factory: async_sessionmaker[AsyncSession]) -> AsyncIte
     """Yield an active async session for a single test."""
     async with session_factory() as test_session:
         yield test_session
+
+
+@pytest.fixture(autouse=True)
+async def isolate_database(engine: AsyncEngine) -> None:
+    """Isolate integration tests by truncating domain tables before each test runs.
+
+    Using TRUNCATE TABLE ... RESTART IDENTITY CASCADE provides complete per-test data
+    isolation in milliseconds without having to destroy/recreate database containers or
+    re-run Alembic migrations.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "TRUNCATE TABLE "
+                "appointments, customers, services, barbers, "
+                "conversation_states, processed_messages, business_hours "
+                "RESTART IDENTITY CASCADE;"
+            )
+        )
