@@ -20,18 +20,42 @@ from booking_agent.domain.errors import (
     SlotInThePastError,
     SlotUnavailableError,
 )
-from booking_agent.domain.ports import Clock, DatabaseHealthChecker, IntentParser
+from booking_agent.domain.models import (
+    AvailabilityResult,
+    BookingResult,
+    CancelResult,
+    RescheduleResult,
+)
+from booking_agent.domain.ports import (
+    AppointmentRepositoryPort,
+    BarberRepositoryPort,
+    BusinessHoursRepositoryPort,
+    Clock,
+    CustomerRepositoryPort,
+    DatabaseHealthChecker,
+    IntentParser,
+    ServiceRepositoryPort,
+    UnitOfWork,
+    UnitOfWorkFactory,
+)
 
 __all__ = [
     "AppointmentInThePastError",
     "AppointmentNotConfirmedError",
     "AppointmentNotFoundError",
+    "AppointmentRepositoryPort",
     "AppointmentStatus",
+    "AvailabilityResult",
     "BarberNotFoundError",
+    "BarberRepositoryPort",
     "BookingIntent",
+    "BookingResult",
+    "BusinessHoursRepositoryPort",
+    "CancelResult",
     "Clock",
     "ConversationStateNotFoundError",
     "CustomerNotFoundError",
+    "CustomerRepositoryPort",
     "DatabaseHealthChecker",
     "DomainError",
     "IntentParser",
@@ -43,7 +67,11 @@ __all__ = [
     "NotAppointmentOwnerError",
     "NotFoundError",
     "OutsideBusinessHoursError",
+    "RescheduleResult",
     "ServiceNotFoundError",
+    "ServiceRepositoryPort",
     "SlotInThePastError",
     "SlotUnavailableError",
+    "UnitOfWork",
+    "UnitOfWorkFactory",
 ]
