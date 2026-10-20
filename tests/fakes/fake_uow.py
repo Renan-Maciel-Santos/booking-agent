@@ -10,17 +10,22 @@ from booking_agent.database.models import (
     Barber,
     BookingAction,
     BusinessHours,
+    ConversationState,
     Customer,
+    ProcessedMessage,
     Service,
 )
-from booking_agent.domain.enums import AppointmentStatus
+from booking_agent.domain.enums import AppointmentStatus, MessageStatus
 from booking_agent.domain.errors import ActionAlreadyExistsError, SlotUnavailableError
+from booking_agent.domain.models import MessageAcquisition
 from booking_agent.domain.ports import (
     AppointmentRepositoryPort,
     BarberRepositoryPort,
     BookingActionRepositoryPort,
     BusinessHoursRepositoryPort,
+    ConversationStateRepositoryPort,
     CustomerRepositoryPort,
+    ProcessedMessageRepositoryPort,
     ServiceRepositoryPort,
     UnitOfWork,
 )
@@ -35,7 +40,9 @@ class InMemoryDataStore:
         self.barbers: dict[uuid.UUID, Barber] = {}
         self.booking_actions: dict[uuid.UUID, BookingAction] = {}
         self.business_hours: dict[int, BusinessHours] = {}
+        self.conversation_states: dict[str, ConversationState] = {}
         self.customers: dict[uuid.UUID, Customer] = {}
+        self.processed_messages: dict[str, ProcessedMessage] = {}
         self.services: dict[uuid.UUID, Service] = {}
 
 
@@ -71,6 +78,12 @@ class FakeAppointmentRepository:
     async def get_by_id(self, appointment_id: uuid.UUID) -> Appointment | None:
         """Fetch appointment by primary key."""
         return self._staged.get(appointment_id)
+
+    async def list_by_customer(self, customer_id: uuid.UUID) -> Sequence[Appointment]:
+        """Fetch all appointments for a given customer ordered by starts_at."""
+        results = [a for a in self._staged.values() if a.customer_id == customer_id]
+        results.sort(key=lambda a: a.starts_at)
+        return results
 
     async def create(
         self,
@@ -278,6 +291,118 @@ class FakeBookingActionRepository:
         return action
 
 
+class FakeConversationStateRepository:
+    """Fake repository managing ConversationState persistence in memory."""
+
+    def __init__(
+        self,
+        store: InMemoryDataStore,
+        staged_states: dict[str, ConversationState],
+    ) -> None:
+        """Store reference to shared store and staged states."""
+        self._store = store
+        self._staged = staged_states
+
+    async def get(self, phone: str, for_update: bool = False) -> ConversationState | None:
+        """Fetch dialogue state for a phone number."""
+        state = self._staged.get(phone)
+        return deepcopy(state) if state is not None else None
+
+    async def upsert(
+        self,
+        phone: str,
+        stage: str,
+        slots: dict[str, Any],
+    ) -> ConversationState:
+        """Insert or update conversation state."""
+        state = self._staged.get(phone)
+        now = datetime.now(UTC)
+        if state is None:
+            state = ConversationState(
+                phone=phone,
+                stage=stage,
+                slots=deepcopy(slots),
+                created_at=now,
+                updated_at=now,
+            )
+            self._staged[phone] = state
+        else:
+            state.stage = stage
+            state.slots = deepcopy(slots)
+            state.updated_at = now
+        return deepcopy(state)
+
+
+class FakeProcessedMessageRepository:
+    """Fake repository managing ProcessedMessage persistence and leasing."""
+
+    def __init__(
+        self,
+        store: InMemoryDataStore,
+        staged_messages: dict[str, ProcessedMessage],
+    ) -> None:
+        """Store reference to shared store and staged messages."""
+        self._store = store
+        self._staged = staged_messages
+
+    async def get(self, message_id: str) -> ProcessedMessage | None:
+        """Fetch a processed message record by primary key."""
+        msg = self._staged.get(message_id)
+        return deepcopy(msg) if msg is not None else None
+
+    async def acquire(self, message_id: str, timeout_seconds: int = 300) -> MessageAcquisition:
+        """Atomically acquire processing rights for a message ID."""
+        now = datetime.now(UTC)
+        existing = self._staged.get(message_id)
+        if existing is None:
+            new_msg = ProcessedMessage(
+                message_id=message_id,
+                status=MessageStatus.PROCESSING.value,
+                response_text=None,
+                created_at=now,
+                updated_at=now,
+            )
+            self._staged[message_id] = new_msg
+            return MessageAcquisition(acquired=True, status=MessageStatus.PROCESSING)
+
+        if existing.status == MessageStatus.DONE.value:
+            return MessageAcquisition(
+                acquired=False,
+                status=MessageStatus.DONE,
+                response_text=existing.response_text,
+            )
+
+        if existing.status == MessageStatus.PROCESSING.value:
+            elapsed = (now - existing.updated_at).total_seconds()
+            if elapsed > timeout_seconds:
+                existing.updated_at = now
+                return MessageAcquisition(acquired=True, status=MessageStatus.PROCESSING)
+            return MessageAcquisition(acquired=False, status=MessageStatus.PROCESSING)
+
+        existing.status = MessageStatus.PROCESSING.value
+        existing.updated_at = now
+        return MessageAcquisition(acquired=True, status=MessageStatus.PROCESSING)
+
+    async def mark_done(self, message_id: str, response_text: str | None = None) -> bool:
+        """Mark a message as done with optional response_text."""
+        existing = self._staged.get(message_id)
+        if existing is not None:
+            existing.status = MessageStatus.DONE.value
+            existing.response_text = response_text
+            existing.updated_at = datetime.now(UTC)
+            return True
+        return False
+
+    async def mark_failed(self, message_id: str) -> bool:
+        """Mark a message as failed."""
+        existing = self._staged.get(message_id)
+        if existing is not None:
+            existing.status = MessageStatus.FAILED.value
+            existing.updated_at = datetime.now(UTC)
+            return True
+        return False
+
+
 class FakeUnitOfWork:
     """Unit of work managing transactions over in-memory repositories."""
 
@@ -286,13 +411,21 @@ class FakeUnitOfWork:
         self._store = store
         self._staged_appointments = deepcopy(store.appointments)
         self._staged_booking_actions = deepcopy(store.booking_actions)
+        self._staged_conversation_states = deepcopy(store.conversation_states)
         self._staged_customers = deepcopy(store.customers)
+        self._staged_processed_messages = deepcopy(store.processed_messages)
 
         self._appointments = FakeAppointmentRepository(store, self._staged_appointments)
         self._barbers = FakeBarberRepository(store)
         self._booking_actions = FakeBookingActionRepository(store, self._staged_booking_actions)
         self._business_hours = FakeBusinessHoursRepository(store)
+        self._conversation_states = FakeConversationStateRepository(
+            store, self._staged_conversation_states
+        )
         self._customers = FakeCustomerRepository(store, self._staged_customers)
+        self._processed_messages = FakeProcessedMessageRepository(
+            store, self._staged_processed_messages
+        )
         self._services = FakeServiceRepository(store)
 
     @property
@@ -316,9 +449,19 @@ class FakeUnitOfWork:
         return self._business_hours
 
     @property
+    def conversation_states(self) -> ConversationStateRepositoryPort:
+        """Active conversation state repository."""
+        return self._conversation_states
+
+    @property
     def customers(self) -> CustomerRepositoryPort:
         """Active customer repository."""
         return self._customers
+
+    @property
+    def processed_messages(self) -> ProcessedMessageRepositoryPort:
+        """Active processed message repository."""
+        return self._processed_messages
 
     @property
     def services(self) -> ServiceRepositoryPort:
@@ -339,7 +482,9 @@ class FakeUnitOfWork:
         if exc_type is None:
             self._store.appointments = self._staged_appointments
             self._store.booking_actions = self._staged_booking_actions
+            self._store.conversation_states = self._staged_conversation_states
             self._store.customers = self._staged_customers
+            self._store.processed_messages = self._staged_processed_messages
 
 
 class FakeUnitOfWorkFactory:

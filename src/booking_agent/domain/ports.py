@@ -15,11 +15,14 @@ from booking_agent.database.models import (
     Barber,
     BookingAction,
     BusinessHours,
+    ConversationState,
     Customer,
+    ProcessedMessage,
     Service,
 )
 from booking_agent.domain.booking_intent import BookingIntent
 from booking_agent.domain.enums import AppointmentStatus
+from booking_agent.domain.models import MessageAcquisition
 
 
 class IntentParser(Protocol):
@@ -78,6 +81,10 @@ class AppointmentRepositoryPort(Protocol):
 
     async def get_by_id(self, appointment_id: uuid.UUID) -> Appointment | None:
         """Fetch an appointment by primary key."""
+        ...
+
+    async def list_by_customer(self, customer_id: uuid.UUID) -> Sequence[Appointment]:
+        """Fetch all appointments for a given customer ordered by starts_at."""
         ...
 
     async def create(
@@ -187,6 +194,43 @@ class BookingActionRepositoryPort(Protocol):
         ...
 
 
+class ConversationStateRepositoryPort(Protocol):
+    """Port for ConversationState persistence and locking."""
+
+    async def get(self, phone: str, for_update: bool = False) -> ConversationState | None:
+        """Fetch dialogue state for a phone number."""
+        ...
+
+    async def upsert(
+        self,
+        phone: str,
+        stage: str,
+        slots: dict[str, Any],
+    ) -> ConversationState:
+        """Insert or update conversation state."""
+        ...
+
+
+class ProcessedMessageRepositoryPort(Protocol):
+    """Port for ProcessedMessage idempotency tracking and leasing."""
+
+    async def get(self, message_id: str) -> ProcessedMessage | None:
+        """Fetch a processed message record by primary key."""
+        ...
+
+    async def acquire(self, message_id: str, timeout_seconds: int = 300) -> MessageAcquisition:
+        """Atomically acquire processing rights for a message ID."""
+        ...
+
+    async def mark_done(self, message_id: str, response_text: str | None = None) -> bool:
+        """Mark a message as done with optional response_text."""
+        ...
+
+    async def mark_failed(self, message_id: str) -> bool:
+        """Mark a message as failed."""
+        ...
+
+
 class UnitOfWork(Protocol):
     """Unit of work protocol managing transaction boundary and repository access."""
 
@@ -211,8 +255,18 @@ class UnitOfWork(Protocol):
         ...
 
     @property
+    def conversation_states(self) -> ConversationStateRepositoryPort:
+        """Conversation state repository."""
+        ...
+
+    @property
     def customers(self) -> CustomerRepositoryPort:
         """Customer repository."""
+        ...
+
+    @property
+    def processed_messages(self) -> ProcessedMessageRepositoryPort:
+        """Processed message repository."""
         ...
 
     @property
