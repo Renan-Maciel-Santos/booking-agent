@@ -53,8 +53,13 @@ def configure_logging(level: str) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
     root_logger = logging.getLogger()
-    # Replace (not append) so repeated calls, e.g. in tests, do not duplicate output.
-    root_logger.handlers = [handler]
+    # Keep external handlers (e.g. pytest caplog) while replacing previous JSON handlers.
+    other_handlers = [
+        h
+        for h in root_logger.handlers
+        if not (isinstance(h, logging.StreamHandler) and isinstance(h.formatter, JsonFormatter))
+    ]
+    root_logger.handlers = [*other_handlers, handler]
     root_logger.setLevel(level.upper())
     # Route uvicorn's loggers through the root JSON handler instead of their own.
     for uvicorn_logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):

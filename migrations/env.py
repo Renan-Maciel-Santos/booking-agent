@@ -15,7 +15,8 @@ from booking_agent.database.engine import build_engine
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Preserve existing loggers (such as pytest caplog and application loggers).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Metadata compared against the database by `alembic revision --autogenerate`.
 target_metadata = Base.metadata
