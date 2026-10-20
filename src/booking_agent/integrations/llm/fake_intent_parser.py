@@ -168,12 +168,16 @@ class FakeIntentParser:
                 if 0 <= hour <= 23:
                     local_time = time(hour, 0)
 
-        # 7. Barber preference extraction
+        # 7. Barber preference extraction (generic pattern e.g. "com o <Nome>", "com a <Nome>")
         barber_name: str | None = None
-        if "carlos" in lower:
-            barber_name = "Carlos"
-        elif "renan" in lower:
-            barber_name = "Renan"
+        barber_match = re.search(
+            r"\b(?:com o barbeiro|com a barbeira|com o|com a)\s+([a-zá-ÿ]+)\b",
+            lower,
+        )
+        if barber_match:
+            candidate = barber_match.group(1).strip()
+            if candidate not in {"qualquer", "horario", "horário", "corte", "barba"}:
+                barber_name = candidate.capitalize()
 
         # 8. Customer name extraction
         customer_name: str | None = None

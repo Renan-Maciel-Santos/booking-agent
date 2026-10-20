@@ -51,6 +51,18 @@ async def test_fake_parser_parses_booking_with_relative_date_and_barber() -> Non
     assert intent.customer_name == "Marcos"
 
 
+async def test_fake_parser_parses_arbitrary_barber_name_generically() -> None:
+    parser = FakeIntentParser()
+    intent1 = await parser.parse("quero agendar corte com a beatriz")
+    assert intent1.barber_name == "Beatriz"
+
+    intent2 = await parser.parse("agendar barba com o barbeiro rodrigo")
+    assert intent2.barber_name == "Rodrigo"
+
+    intent3 = await parser.parse("quero cortar amanhã com qualquer um")
+    assert intent3.barber_name is None
+
+
 async def test_fake_parser_parses_reschedule_with_time_preference() -> None:
     clock = FakeClock(FIXED_NOW_UTC)
     parser = FakeIntentParser(clock=clock, business_timezone=TEST_TZ)
