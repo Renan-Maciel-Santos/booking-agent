@@ -1,9 +1,9 @@
 """Structured output the LLM must produce: the user's booking intent."""
 
+from datetime import date, time
 from enum import StrEnum
-from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IntentType(StrEnum):
@@ -13,6 +13,14 @@ class IntentType(StrEnum):
     RESCHEDULE = "reschedule"
     CANCEL = "cancel"
     UNKNOWN = "unknown"
+
+
+class TimePreference(StrEnum):
+    """Broad time-of-day preference when no specific hour is requested."""
+
+    MORNING = "morning"
+    AFTERNOON = "afternoon"
+    EVENING = "evening"
 
 
 class BookingIntent(BaseModel):
@@ -29,6 +37,13 @@ class BookingIntent(BaseModel):
     intent: IntentType = IntentType.UNKNOWN
     # Free text as the user said it; mapped to a catalog entry by the service.
     service_name: str | None = Field(default=None, min_length=1, max_length=100)
-    # AwareDatetime rejects naive datetimes, which would make slots ambiguous.
-    requested_start: AwareDatetime | None = None
-    appointment_id: UUID | None = None
+    # Local calendar date (YYYY-MM-DD) in the barbershop's business timezone.
+    local_date: date | None = None
+    # Local wall-clock time (HH:MM:SS) in the barbershop's business timezone.
+    local_time: time | None = None
+    # Optional broad period of day when exact hour is omitted (e.g. "tomorrow morning").
+    time_preference: TimePreference | None = None
+    # Preferred barber name if stated by the customer; mapped to active barbers by the service.
+    barber_name: str | None = Field(default=None, min_length=1, max_length=100)
+    # Customer name if self-introduced during dialogue.
+    customer_name: str | None = Field(default=None, min_length=1, max_length=100)
