@@ -52,6 +52,8 @@ class TemplateKey(StrEnum):
     CLARIFICATION_PROMPT = "clarification_prompt"
     SESSION_EXPIRED = "session_expired"
     REQUEST_PROCESSING = "request_processing"
+    NO_SLOTS_AVAILABLE = "no_slots_available"
+    ASK_RESCHEDULE_DATETIME = "ask_reschedule_datetime"
 
 
 _TEMPLATES: dict[TemplateKey, str] = {
@@ -123,6 +125,12 @@ _TEMPLATES: dict[TemplateKey, str] = {
     ),
     TemplateKey.REQUEST_PROCESSING: (
         "Seu pedido está sendo processado, por favor aguarde um instante."
+    ),
+    TemplateKey.NO_SLOTS_AVAILABLE: (
+        "Infelizmente não há horários disponíveis para esta data. Gostaria de verificar outro dia?"
+    ),
+    TemplateKey.ASK_RESCHEDULE_DATETIME: (
+        "Para qual dia e horário você gostaria de remarcar seu agendamento?"
     ),
 }
 

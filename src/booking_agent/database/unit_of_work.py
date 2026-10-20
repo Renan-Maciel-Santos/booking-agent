@@ -10,7 +10,9 @@ from booking_agent.repositories.appointment_repository import AppointmentReposit
 from booking_agent.repositories.barber_repository import BarberRepository
 from booking_agent.repositories.booking_action_repository import BookingActionRepository
 from booking_agent.repositories.business_hours_repository import BusinessHoursRepository
+from booking_agent.repositories.conversation_state_repository import ConversationStateRepository
 from booking_agent.repositories.customer_repository import CustomerRepository
+from booking_agent.repositories.processed_message_repository import ProcessedMessageRepository
 from booking_agent.repositories.service_repository import ServiceRepository
 
 
@@ -29,7 +31,9 @@ class SqlAlchemyUnitOfWork:
         self._barbers: BarberRepository | None = None
         self._booking_actions: BookingActionRepository | None = None
         self._business_hours: BusinessHoursRepository | None = None
+        self._conversation_states: ConversationStateRepository | None = None
         self._customers: CustomerRepository | None = None
+        self._processed_messages: ProcessedMessageRepository | None = None
         self._services: ServiceRepository | None = None
 
     @property
@@ -61,11 +65,25 @@ class SqlAlchemyUnitOfWork:
         return self._business_hours
 
     @property
+    def conversation_states(self) -> ConversationStateRepository:
+        """Active conversation state repository."""
+        if self._conversation_states is None:
+            raise RuntimeError("UnitOfWork has not been entered.")
+        return self._conversation_states
+
+    @property
     def customers(self) -> CustomerRepository:
         """Active customer repository."""
         if self._customers is None:
             raise RuntimeError("UnitOfWork has not been entered.")
         return self._customers
+
+    @property
+    def processed_messages(self) -> ProcessedMessageRepository:
+        """Active processed message repository."""
+        if self._processed_messages is None:
+            raise RuntimeError("UnitOfWork has not been entered.")
+        return self._processed_messages
 
     @property
     def services(self) -> ServiceRepository:
@@ -85,7 +103,9 @@ class SqlAlchemyUnitOfWork:
         self._barbers = BarberRepository(self._session)
         self._booking_actions = BookingActionRepository(self._session)
         self._business_hours = BusinessHoursRepository(self._session)
+        self._conversation_states = ConversationStateRepository(self._session)
         self._customers = CustomerRepository(self._session)
+        self._processed_messages = ProcessedMessageRepository(self._session)
         self._services = ServiceRepository(self._session)
         return self
 

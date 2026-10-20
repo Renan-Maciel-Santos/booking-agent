@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     slot_granularity_minutes: int = Field(default=15, ge=1)
     min_booking_advance_minutes: int = Field(default=60, ge=0)
     max_booking_horizon_days: int = Field(default=30, ge=1)
+    conversation_ttl_minutes: int = Field(default=30, ge=1)
+    message_lease_timeout_seconds: int = Field(default=300, ge=1)
 
     # LLM adapter configuration
     llm_provider: Literal["openai", "fake"] = "openai"
