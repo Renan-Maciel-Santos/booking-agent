@@ -34,3 +34,64 @@ def test_invalid_timezone_raises_validation_error() -> None:
 
     with pytest.raises(ValidationError, match="Invalid IANA timezone"):
         build_test_settings(business_timezone="Invalid/Timezone_Name")
+
+
+def test_llm_settings_defaults() -> None:
+    settings = build_test_settings()
+    assert settings.llm_provider == "fake"
+    assert settings.llm_model == "gpt-4o-mini"
+    assert settings.llm_timeout_seconds == 10.0
+    assert settings.llm_max_retries == 2
+    assert settings.llm_temperature == 0.0
+    assert settings.openai_api_key is None
+
+
+def test_openai_mode_without_key_raises_validation_error() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(
+        ValidationError, match="OPENAI_API_KEY is required when LLM_PROVIDER is 'openai'"
+    ):
+        build_test_settings(llm_provider="openai", openai_api_key=None)
+
+
+def test_openai_mode_with_empty_key_raises_validation_error() -> None:
+    import pytest
+    from pydantic import SecretStr, ValidationError
+
+    with pytest.raises(
+        ValidationError, match="OPENAI_API_KEY is required when LLM_PROVIDER is 'openai'"
+    ):
+        build_test_settings(llm_provider="openai", openai_api_key=SecretStr("   "))
+
+
+def test_openai_mode_with_valid_key_succeeds() -> None:
+    from pydantic import SecretStr
+
+    settings = build_test_settings(
+        llm_provider="openai",
+        openai_api_key=SecretStr("sk-valid-key"),
+    )
+    assert settings.llm_provider == "openai"
+    assert settings.openai_api_key is not None
+    assert settings.openai_api_key.get_secret_value() == "sk-valid-key"
+
+
+def test_openai_key_is_masked_in_repr() -> None:
+    from pydantic import SecretStr
+
+    settings = build_test_settings(
+        llm_provider="openai",
+        openai_api_key=SecretStr("sk-super-secret"),
+    )
+    assert "sk-super-secret" not in repr(settings)
+    assert "sk-super-secret" not in str(settings.model_dump())
+
+
+def test_invalid_llm_provider_raises_validation_error() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        build_test_settings(llm_provider="unsupported_provider")

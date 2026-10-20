@@ -39,6 +39,7 @@ def build_test_settings(**overrides: object) -> Settings:
         "postgres_host": "localhost",
         "postgres_port": 5432,
         "log_level": "WARNING",
+        "llm_provider": "fake",
     }
     values.update(overrides)
     # _env_file=None isolates tests from any developer .env file.

@@ -1,9 +1,10 @@
 """Application settings loaded exclusively from environment variables."""
 
 from functools import lru_cache
+from typing import Literal, Self
 from zoneinfo import ZoneInfo
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +37,14 @@ class Settings(BaseSettings):
     min_booking_advance_minutes: int = Field(default=60, ge=0)
     max_booking_horizon_days: int = Field(default=30, ge=1)
 
+    # LLM adapter configuration
+    llm_provider: Literal["openai", "fake"] = "openai"
+    llm_model: str = "gpt-4o-mini"
+    llm_timeout_seconds: float = Field(default=10.0, gt=0)
+    llm_max_retries: int = Field(default=2, ge=0)
+    llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    openai_api_key: SecretStr | None = None
+
     @field_validator("business_timezone")
     @classmethod
     def validate_timezone(cls, v: str) -> str:
@@ -45,6 +54,18 @@ class Settings(BaseSettings):
         except Exception as exc:
             raise ValueError(f"Invalid IANA timezone: {v}") from exc
         return v
+
+    @model_validator(mode="after")
+    def validate_llm_settings(self) -> Self:
+        """Validate LLM settings based on the configured provider.
+
+        Fails immediately at startup if openai provider is selected without an API key.
+        """
+        if self.llm_provider == "openai" and (
+            self.openai_api_key is None or not self.openai_api_key.get_secret_value().strip()
+        ):
+            raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER is 'openai'")
+        return self
 
     # A plain property (not a computed_field) keeps the URL, which embeds the
     # password, out of repr() and model_dump().
