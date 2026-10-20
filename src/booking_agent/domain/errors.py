@@ -7,6 +7,33 @@ class DomainError(Exception):
     """Base class for all domain errors."""
 
 
+class LLMError(DomainError):
+    """Base class for errors originating from the LLM adapter layer."""
+
+
+class LLMConfigurationError(LLMError):
+    """Raised when the LLM provider rejects requests due to configuration or credentials.
+
+    Examples include invalid API keys (401), permission denied (403), non-existent model (404),
+    or invalid API parameters (400). Signals a system misconfiguration that fails the message,
+    triggers an HTTP 503 response, and logs at ERROR level.
+    """
+
+
+class LLMUnavailableError(LLMError):
+    """Raised when the LLM provider is unreachable, timed out, or rate-limited.
+
+    Signals a transient provider failure eligible for incoming channel retry with HTTP 503.
+    """
+
+
+class LLMInvalidOutputError(LLMError):
+    """Raised when the LLM output is refused, truncated, content-filtered, or fails validation.
+
+    Signals a non-retryable extraction failure requiring conversational clarification.
+    """
+
+
 class SlotUnavailableError(DomainError):
     """Raised when an appointment slot is unavailable due to an overlapping booking."""
 

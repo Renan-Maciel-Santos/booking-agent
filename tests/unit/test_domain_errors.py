@@ -12,6 +12,10 @@ from booking_agent.domain.errors import (
     DomainError,
     InvalidLocalTimeError,
     InvalidTimeWindowError,
+    LLMConfigurationError,
+    LLMError,
+    LLMInvalidOutputError,
+    LLMUnavailableError,
     MinimumNoticeViolationError,
     NotAppointmentOwnerError,
     NotFoundError,
@@ -26,6 +30,10 @@ from tests.fakes.fake_clock import FakeClock
 
 
 def test_domain_error_inheritance() -> None:
+    assert issubclass(LLMError, DomainError)
+    assert issubclass(LLMConfigurationError, LLMError)
+    assert issubclass(LLMUnavailableError, LLMError)
+    assert issubclass(LLMInvalidOutputError, LLMError)
     assert issubclass(SlotUnavailableError, DomainError)
     assert issubclass(OutsideBusinessHoursError, DomainError)
     assert issubclass(SlotInThePastError, DomainError)
