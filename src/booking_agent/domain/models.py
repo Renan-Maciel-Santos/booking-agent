@@ -6,6 +6,20 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from booking_agent.database.models import Appointment
+from booking_agent.domain.enums import MessageStatus
+
+
+@dataclass(frozen=True)
+class MessageAcquisition:
+    """Outcome of attempting to acquire processing rights for an incoming message."""
+
+    acquired: bool
+    status: MessageStatus
+    response_text: str | None = None
+
+    def __bool__(self) -> bool:
+        """Allow treating acquisition directly as boolean success in conditional checks."""
+        return self.acquired
 
 
 @dataclass(frozen=True)

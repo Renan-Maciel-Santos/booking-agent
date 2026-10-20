@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from booking_agent.domain.ports import UnitOfWork
 from booking_agent.repositories.appointment_repository import AppointmentRepository
 from booking_agent.repositories.barber_repository import BarberRepository
+from booking_agent.repositories.booking_action_repository import BookingActionRepository
 from booking_agent.repositories.business_hours_repository import BusinessHoursRepository
 from booking_agent.repositories.customer_repository import CustomerRepository
 from booking_agent.repositories.service_repository import ServiceRepository
@@ -26,6 +27,7 @@ class SqlAlchemyUnitOfWork:
         self._session: AsyncSession | None = None
         self._appointments: AppointmentRepository | None = None
         self._barbers: BarberRepository | None = None
+        self._booking_actions: BookingActionRepository | None = None
         self._business_hours: BusinessHoursRepository | None = None
         self._customers: CustomerRepository | None = None
         self._services: ServiceRepository | None = None
@@ -43,6 +45,13 @@ class SqlAlchemyUnitOfWork:
         if self._barbers is None:
             raise RuntimeError("UnitOfWork has not been entered.")
         return self._barbers
+
+    @property
+    def booking_actions(self) -> BookingActionRepository:
+        """Active booking action repository."""
+        if self._booking_actions is None:
+            raise RuntimeError("UnitOfWork has not been entered.")
+        return self._booking_actions
 
     @property
     def business_hours(self) -> BusinessHoursRepository:
@@ -74,6 +83,7 @@ class SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
         self._appointments = AppointmentRepository(self._session)
         self._barbers = BarberRepository(self._session)
+        self._booking_actions = BookingActionRepository(self._session)
         self._business_hours = BusinessHoursRepository(self._session)
         self._customers = CustomerRepository(self._session)
         self._services = ServiceRepository(self._session)
