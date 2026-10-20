@@ -1,8 +1,14 @@
 """Domain models, ports, and errors."""
 
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
-from booking_agent.domain.enums import AppointmentStatus, MessageStatus
+from booking_agent.domain.enums import (
+    ActionKind,
+    AppointmentStatus,
+    ConversationStage,
+    MessageStatus,
+)
 from booking_agent.domain.errors import (
+    ActionAlreadyExistsError,
     AppointmentInThePastError,
     AppointmentNotConfirmedError,
     AppointmentNotFoundError,
@@ -24,11 +30,13 @@ from booking_agent.domain.models import (
     AvailabilityResult,
     BookingResult,
     CancelResult,
+    MessageAcquisition,
     RescheduleResult,
 )
 from booking_agent.domain.ports import (
     AppointmentRepositoryPort,
     BarberRepositoryPort,
+    BookingActionRepositoryPort,
     BusinessHoursRepositoryPort,
     Clock,
     CustomerRepositoryPort,
@@ -40,6 +48,8 @@ from booking_agent.domain.ports import (
 )
 
 __all__ = [
+    "ActionAlreadyExistsError",
+    "ActionKind",
     "AppointmentInThePastError",
     "AppointmentNotConfirmedError",
     "AppointmentNotFoundError",
@@ -48,11 +58,13 @@ __all__ = [
     "AvailabilityResult",
     "BarberNotFoundError",
     "BarberRepositoryPort",
+    "BookingActionRepositoryPort",
     "BookingIntent",
     "BookingResult",
     "BusinessHoursRepositoryPort",
     "CancelResult",
     "Clock",
+    "ConversationStage",
     "ConversationStateNotFoundError",
     "CustomerNotFoundError",
     "CustomerRepositoryPort",
@@ -62,6 +74,7 @@ __all__ = [
     "IntentType",
     "InvalidLocalTimeError",
     "InvalidTimeWindowError",
+    "MessageAcquisition",
     "MessageStatus",
     "MinimumNoticeViolationError",
     "NotAppointmentOwnerError",

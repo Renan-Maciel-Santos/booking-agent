@@ -97,3 +97,14 @@ class AppointmentNotFoundError(NotFoundError):
 
 class ConversationStateNotFoundError(NotFoundError):
     """Raised when a conversation state cannot be found."""
+
+
+class ActionAlreadyExistsError(DomainError):
+    """Raised when attempting to record a booking action with an existing action_id."""
+
+    def __init__(self, action_id: str | None = None) -> None:
+        """Initialize with conflicting action_id."""
+        super().__init__(
+            f"Action {action_id} already exists." if action_id else "Action already exists."
+        )
+        self.action_id = action_id

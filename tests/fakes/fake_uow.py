@@ -1,18 +1,24 @@
-"""In-memory fake implementation of UnitOfWork and repositories for unit testing."""
-
 import uuid
 from collections.abc import Sequence
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
-from booking_agent.database.models import Appointment, Barber, BusinessHours, Customer, Service
+from booking_agent.database.models import (
+    Appointment,
+    Barber,
+    BookingAction,
+    BusinessHours,
+    Customer,
+    Service,
+)
 from booking_agent.domain.enums import AppointmentStatus
-from booking_agent.domain.errors import SlotUnavailableError
+from booking_agent.domain.errors import ActionAlreadyExistsError, SlotUnavailableError
 from booking_agent.domain.ports import (
     AppointmentRepositoryPort,
     BarberRepositoryPort,
+    BookingActionRepositoryPort,
     BusinessHoursRepositoryPort,
     CustomerRepositoryPort,
     ServiceRepositoryPort,
@@ -27,6 +33,7 @@ class InMemoryDataStore:
         """Initialize empty entity dictionaries."""
         self.appointments: dict[uuid.UUID, Appointment] = {}
         self.barbers: dict[uuid.UUID, Barber] = {}
+        self.booking_actions: dict[uuid.UUID, BookingAction] = {}
         self.business_hours: dict[int, BusinessHours] = {}
         self.customers: dict[uuid.UUID, Customer] = {}
         self.services: dict[uuid.UUID, Service] = {}
@@ -234,6 +241,43 @@ class FakeServiceRepository:
         return services
 
 
+class FakeBookingActionRepository:
+    """Fake repository managing BookingAction persistence in memory."""
+
+    def __init__(
+        self,
+        store: InMemoryDataStore,
+        staged_actions: dict[uuid.UUID, BookingAction],
+    ) -> None:
+        """Store reference to shared store and staged actions."""
+        self._store = store
+        self._staged = staged_actions
+
+    async def get_by_id(self, action_id: uuid.UUID) -> BookingAction | None:
+        """Fetch booking action by primary key."""
+        return self._staged.get(action_id)
+
+    async def record_action(
+        self,
+        action_id: uuid.UUID,
+        kind: str,
+        appointment_id: uuid.UUID,
+        result: dict[str, Any],
+    ) -> BookingAction:
+        """Record an executed booking mutation."""
+        if action_id in self._staged:
+            raise ActionAlreadyExistsError(str(action_id))
+        action = BookingAction(
+            action_id=action_id,
+            kind=kind,
+            appointment_id=appointment_id,
+            result=result,
+            created_at=datetime.now(UTC),
+        )
+        self._staged[action_id] = action
+        return action
+
+
 class FakeUnitOfWork:
     """Unit of work managing transactions over in-memory repositories."""
 
@@ -241,10 +285,12 @@ class FakeUnitOfWork:
         """Initialize with parent store and stage local copies."""
         self._store = store
         self._staged_appointments = deepcopy(store.appointments)
+        self._staged_booking_actions = deepcopy(store.booking_actions)
         self._staged_customers = deepcopy(store.customers)
 
         self._appointments = FakeAppointmentRepository(store, self._staged_appointments)
         self._barbers = FakeBarberRepository(store)
+        self._booking_actions = FakeBookingActionRepository(store, self._staged_booking_actions)
         self._business_hours = FakeBusinessHoursRepository(store)
         self._customers = FakeCustomerRepository(store, self._staged_customers)
         self._services = FakeServiceRepository(store)
@@ -258,6 +304,11 @@ class FakeUnitOfWork:
     def barbers(self) -> BarberRepositoryPort:
         """Active barber repository."""
         return self._barbers
+
+    @property
+    def booking_actions(self) -> BookingActionRepositoryPort:
+        """Active booking action repository."""
+        return self._booking_actions
 
     @property
     def business_hours(self) -> BusinessHoursRepositoryPort:
@@ -287,6 +338,7 @@ class FakeUnitOfWork:
         """Commit staged changes to shared store on clean exit; discard on exception."""
         if exc_type is None:
             self._store.appointments = self._staged_appointments
+            self._store.booking_actions = self._staged_booking_actions
             self._store.customers = self._staged_customers
 
 

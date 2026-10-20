@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    Text,
     Time,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ExcludeConstraint
@@ -186,6 +187,40 @@ class Appointment(Base):
     )
 
 
+class BookingAction(Base):
+    """Audit and idempotency record for executed booking mutations."""
+
+    __tablename__ = "booking_actions"
+
+    action_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    appointment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("appointments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    result: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('book', 'reschedule', 'cancel')",
+            name="ck_booking_actions_kind_valid",
+        ),
+    )
+
+
 class ConversationState(Base):
     """Dialogue state machine and slot values per customer phone."""
 
@@ -230,6 +265,7 @@ class ProcessedMessage(Base):
 
     message_id: Mapped[str] = mapped_column(String, primary_key=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

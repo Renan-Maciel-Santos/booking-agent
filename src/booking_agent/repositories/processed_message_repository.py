@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from booking_agent.database.models import ProcessedMessage
 from booking_agent.domain.enums import MessageStatus
+from booking_agent.domain.models import MessageAcquisition
 
 _ACQUIRE_STATEMENT = text(
     """
@@ -25,7 +26,9 @@ _ACQUIRE_STATEMENT = text(
 _MARK_DONE_STATEMENT = text(
     """
     UPDATE processed_messages
-    SET status = :status_done, updated_at = now()
+    SET status = :status_done,
+        response_text = :response_text,
+        updated_at = now()
     WHERE message_id = :message_id
     RETURNING message_id
     """
@@ -58,19 +61,20 @@ class ProcessedMessageRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def acquire(self, message_id: str, timeout_seconds: int = 300) -> bool:
+    async def acquire(self, message_id: str, timeout_seconds: int = 300) -> MessageAcquisition:
         """Atomically acquire processing rights for a message ID.
 
-        Succeeds (returns True) if the message was never seen, is in 'failed' status,
+        Succeeds (acquired=True) if the message was never seen, is in 'failed' status,
         or has been stuck in 'processing' past the timeout interval.
-        Returns False if the message is already 'done' or currently 'processing'.
+        Returns acquired=False if the message is already 'done' (including its saved response_text)
+        or currently 'processing'.
 
         Args:
             message_id: Webhook message identifier.
             timeout_seconds: Timeout in seconds to consider 'processing' stale.
 
         Returns:
-            True if acquired, False otherwise.
+            MessageAcquisition with acquired flag, status, and optional response_text.
         """
         result = await self._session.execute(
             _ACQUIRE_STATEMENT,
@@ -82,20 +86,45 @@ class ProcessedMessageRepository:
             },
         )
         await self._session.flush()
-        return result.scalar_one_or_none() is not None
+        acquired_row = result.scalar_one_or_none()
+        if acquired_row is not None:
+            return MessageAcquisition(
+                acquired=True,
+                status=MessageStatus.PROCESSING,
+                response_text=None,
+            )
 
-    async def mark_done(self, message_id: str) -> bool:
-        """Mark a processed message as done, updating updated_at.
+        existing = await self.get(message_id)
+        if existing is None:
+            return MessageAcquisition(
+                acquired=False,
+                status=MessageStatus.PROCESSING,
+                response_text=None,
+            )
+
+        return MessageAcquisition(
+            acquired=False,
+            status=MessageStatus(existing.status),
+            response_text=existing.response_text,
+        )
+
+    async def mark_done(self, message_id: str, response_text: str | None = None) -> bool:
+        """Mark a processed message as done, updating updated_at and saving response_text.
 
         Args:
             message_id: Webhook message identifier.
+            response_text: Final rendered response sent to user.
 
         Returns:
             True if row was updated, False if message_id not found.
         """
         result = await self._session.execute(
             _MARK_DONE_STATEMENT,
-            {"message_id": message_id, "status_done": MessageStatus.DONE.value},
+            {
+                "message_id": message_id,
+                "status_done": MessageStatus.DONE.value,
+                "response_text": response_text,
+            },
         )
         await self._session.flush()
         return result.scalar_one_or_none() is not None

@@ -8,9 +8,16 @@ import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from types import TracebackType
-from typing import Protocol, Self
+from typing import Any, Protocol, Self
 
-from booking_agent.database.models import Appointment, Barber, BusinessHours, Customer, Service
+from booking_agent.database.models import (
+    Appointment,
+    Barber,
+    BookingAction,
+    BusinessHours,
+    Customer,
+    Service,
+)
 from booking_agent.domain.booking_intent import BookingIntent
 from booking_agent.domain.enums import AppointmentStatus
 
@@ -162,6 +169,24 @@ class ServiceRepositoryPort(Protocol):
         ...
 
 
+class BookingActionRepositoryPort(Protocol):
+    """Port for BookingAction persistence and idempotency tracking."""
+
+    async def get_by_id(self, action_id: uuid.UUID) -> BookingAction | None:
+        """Fetch a booking action by primary key."""
+        ...
+
+    async def record_action(
+        self,
+        action_id: uuid.UUID,
+        kind: str,
+        appointment_id: uuid.UUID,
+        result: dict[str, Any],
+    ) -> BookingAction:
+        """Record an executed booking mutation."""
+        ...
+
+
 class UnitOfWork(Protocol):
     """Unit of work protocol managing transaction boundary and repository access."""
 
@@ -173,6 +198,11 @@ class UnitOfWork(Protocol):
     @property
     def barbers(self) -> BarberRepositoryPort:
         """Barber repository."""
+        ...
+
+    @property
+    def booking_actions(self) -> BookingActionRepositoryPort:
+        """Booking actions repository."""
         ...
 
     @property
