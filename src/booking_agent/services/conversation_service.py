@@ -235,6 +235,7 @@ class ConversationService:
                 if stage == ConversationStage.AWAITING_CONFIRMATION.value and "action_id" in slots:
                     if fast_path_candidate == "affirmative":
                         stage = ConversationStage.EXECUTING.value
+                        slots["executing_message_id"] = message_id
                         await uow.conversation_states.upsert(phone, stage, slots)
                         # Lock released upon exiting block; advances to Phase 4
                     else:  # negative

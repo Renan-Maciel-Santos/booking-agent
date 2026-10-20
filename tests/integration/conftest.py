@@ -108,7 +108,7 @@ async def isolate_database(engine: AsyncEngine) -> None:
             text(
                 "TRUNCATE TABLE "
                 "appointments, customers, services, barbers, "
-                "conversation_states, processed_messages, business_hours "
+                "booking_actions, conversation_states, processed_messages, business_hours "
                 "RESTART IDENTITY CASCADE;"
             )
         )
