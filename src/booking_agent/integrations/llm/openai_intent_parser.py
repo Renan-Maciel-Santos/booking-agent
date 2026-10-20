@@ -138,6 +138,10 @@ class OpenAIIntentParser:
             raise LLMUnavailableError(f"OpenAI service unavailable: {exc}") from exc
         except (LengthFinishReasonError, ContentFilterFinishReasonError) as exc:
             raise LLMInvalidOutputError(f"LLM output truncated or filtered: {exc}") from exc
+        except ValidationError as exc:
+            raise LLMInvalidOutputError(
+                f"Structured outputs schema validation failed during API parse: {exc}"
+            ) from exc
         except (
             AuthenticationError,
             PermissionDeniedError,

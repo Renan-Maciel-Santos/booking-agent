@@ -282,6 +282,29 @@ async def test_openai_parser_maps_malformed_date_to_invalid_output_error() -> No
         await parser.parse("quero cortar amanhã")
 
 
+async def test_openai_parser_maps_api_call_validation_error_to_invalid_output_error() -> None:
+    validation_err = ValidationError.from_exception_data("StructuredOutput", [])
+    mock_client = MagicMock(spec=AsyncOpenAI)
+    mock_client.beta = MagicMock()
+    mock_client.beta.chat = MagicMock()
+    mock_client.beta.chat.completions = MagicMock()
+    mock_client.beta.chat.completions.parse = AsyncMock(side_effect=validation_err)
+
+    parser = OpenAIIntentParser(
+        client=mock_client,
+        model="gpt-4o-mini",
+        clock=FakeClock(FIXED_NOW_UTC),
+        business_timezone=TEST_TZ,
+    )
+
+    with pytest.raises(
+        LLMInvalidOutputError, match="validation failed during API parse"
+    ) as exc_info:
+        await parser.parse("any message")
+
+    assert exc_info.value.__cause__ is validation_err
+
+
 def test_adapter_schema_rejects_extra_fields() -> None:
     # Strict mode test: extra invented attributes are strictly forbidden
     with pytest.raises(ValidationError):
