@@ -542,3 +542,122 @@ async def test_cancel_ownership_and_past_checks(
     fake_clock.set_time(datetime(2026, 10, 21, 14, 0, tzinfo=UTC))
     with pytest.raises(AppointmentInThePastError):
         await service_obj.cancel(res.appointment.id, "+5511999990001")
+
+
+# ---------------------------------------------------------------------------
+# 6. Action idempotency via booking_actions
+# ---------------------------------------------------------------------------
+
+
+async def test_book_with_action_id_is_idempotent(
+    base_settings: Settings,
+    fake_clock: FakeClock,
+    populated_store: tuple[InMemoryDataStore, Barber, Barber, Service, Customer],
+) -> None:
+    """Verify book with the same action_id returns the existing appointment."""
+    store, barber1, _, service, _ = populated_store
+    service_obj = BookingService(FakeUnitOfWorkFactory(store), fake_clock, base_settings)
+    action_id = uuid.uuid4()
+
+    start_dt = datetime(2026, 10, 21, 13, 0, tzinfo=UTC)
+    res1 = await service_obj.book(
+        "+5511999990001",
+        "Bob",
+        service.id,
+        start_dt,
+        barber1.id,
+        action_id=action_id,
+    )
+    assert len(store.appointments) == 1
+    assert action_id in store.booking_actions
+
+    # Re-executing with the same action_id returns original appointment without duplicating
+    res2 = await service_obj.book(
+        "+5511999990001",
+        "Bob",
+        service.id,
+        start_dt,
+        barber1.id,
+        action_id=action_id,
+    )
+    assert res2.appointment.id == res1.appointment.id
+    assert len(store.appointments) == 1
+
+
+async def test_reschedule_with_action_id_is_idempotent(
+    base_settings: Settings,
+    fake_clock: FakeClock,
+    populated_store: tuple[InMemoryDataStore, Barber, Barber, Service, Customer],
+) -> None:
+    """Verify reschedule with the same action_id returns the cached result."""
+    store, barber1, _, service, _ = populated_store
+    service_obj = BookingService(FakeUnitOfWorkFactory(store), fake_clock, base_settings)
+
+    start_dt = datetime(2026, 10, 21, 13, 0, tzinfo=UTC)
+    book_res = await service_obj.book("+5511999990001", "Bob", service.id, start_dt, barber1.id)
+
+    action_id = uuid.uuid4()
+    new_dt = datetime(2026, 10, 21, 14, 0, tzinfo=UTC)
+    res1 = await service_obj.reschedule(
+        book_res.appointment.id,
+        "+5511999990001",
+        new_dt,
+        action_id=action_id,
+    )
+    assert res1.appointment.starts_at == new_dt
+
+    # Re-executing reschedule with the same action_id
+    res2 = await service_obj.reschedule(
+        book_res.appointment.id,
+        "+5511999990001",
+        new_dt,
+        action_id=action_id,
+    )
+    assert res2.appointment.id == res1.appointment.id
+    assert res2.appointment.starts_at == new_dt
+
+
+async def test_delayed_old_reschedule_does_not_overwrite_newer_reschedule(
+    base_settings: Settings,
+    fake_clock: FakeClock,
+    populated_store: tuple[InMemoryDataStore, Barber, Barber, Service, Customer],
+) -> None:
+    """Verify delayed re-delivery of an old reschedule action does not overwrite a newer one."""
+    store, barber1, _, service, _ = populated_store
+    service_obj = BookingService(FakeUnitOfWorkFactory(store), fake_clock, base_settings)
+
+    start_dt = datetime(2026, 10, 21, 13, 0, tzinfo=UTC)
+    book_res = await service_obj.book("+5511999990001", "Bob", service.id, start_dt, barber1.id)
+
+    # Turn 1: Reschedule to 14:00 with action_id_A
+    action_id_a = uuid.uuid4()
+    dt_a = datetime(2026, 10, 21, 14, 0, tzinfo=UTC)
+    await service_obj.reschedule(
+        book_res.appointment.id,
+        "+5511999990001",
+        dt_a,
+        action_id=action_id_a,
+    )
+    assert store.appointments[book_res.appointment.id].starts_at == dt_a
+
+    # Turn 2: Reschedule to 15:00 with action_id_B
+    action_id_b = uuid.uuid4()
+    dt_b = datetime(2026, 10, 21, 15, 0, tzinfo=UTC)
+    await service_obj.reschedule(
+        book_res.appointment.id,
+        "+5511999990001",
+        dt_b,
+        action_id=action_id_b,
+    )
+    assert store.appointments[book_res.appointment.id].starts_at == dt_b
+
+    # Turn 3: Delayed re-delivery of action_id_a (proposing old 14:00)
+    delayed_res = await service_obj.reschedule(
+        book_res.appointment.id,
+        "+5511999990001",
+        dt_a,
+        action_id=action_id_a,
+    )
+    # The appointment in store MUST remain at 15:00 (dt_b)!
+    assert store.appointments[book_res.appointment.id].starts_at == dt_b
+    assert delayed_res.appointment.id == book_res.appointment.id

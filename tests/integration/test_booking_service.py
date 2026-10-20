@@ -339,3 +339,58 @@ async def test_any_barber_retry_on_concurrent_conflict(
             .all()
         )
         assert len(appts) == 2
+
+
+async def test_book_with_action_id_idempotency_in_postgresql(
+    session_factory: async_sessionmaker[AsyncSession],
+    integration_settings: Settings,
+) -> None:
+    """Verify repeating book with the same action_id in PostgreSQL returns cached appointment."""
+    async with session_factory() as session:
+        await _setup_business_schedule(session)
+        barber = await BarberRepository(session).create(name=f"Barber_{uuid.uuid4().hex[:6]}")
+        service = await ServiceRepository(session).create(
+            name=f"Service_{uuid.uuid4().hex[:6]}", duration_minutes=30, price_cents=3500
+        )
+        phone = f"+55119{uuid.uuid4().int % 100000000:08d}"
+        await session.commit()
+
+    clock = FakeClock(datetime(2026, 11, 17, 12, 0, tzinfo=UTC))
+    uow_factory = SqlAlchemyUnitOfWorkFactory(session_factory)
+    booking_service = BookingService(uow_factory, clock, integration_settings)
+    action_id = uuid.uuid4()
+
+    target_dt = datetime(2026, 11, 17, 14, 0, tzinfo=UTC)
+    res1 = await booking_service.book(
+        customer_phone=phone,
+        customer_name="Action User",
+        service_id=service.id,
+        starts_at=target_dt,
+        barber_id=barber.id,
+        action_id=action_id,
+    )
+    assert res1.appointment is not None
+
+    # Second call with the same action_id
+    res2 = await booking_service.book(
+        customer_phone=phone,
+        customer_name="Action User",
+        service_id=service.id,
+        starts_at=target_dt,
+        barber_id=barber.id,
+        action_id=action_id,
+    )
+    assert res2.appointment.id == res1.appointment.id
+
+    # Verify exactly one appointment and one booking_action row exist in database
+    async with session_factory() as session:
+        appts = (
+            (
+                await session.execute(
+                    select(Appointment).where(Appointment.id == res1.appointment.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(appts) == 1

@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from booking_agent.config import Settings
 from booking_agent.domain.enums import AppointmentStatus
 from booking_agent.domain.errors import (
+    ActionAlreadyExistsError,
     AppointmentInThePastError,
     AppointmentNotConfirmedError,
     AppointmentNotFoundError,
@@ -236,6 +237,7 @@ class BookingService:
         service_id: uuid.UUID,
         starts_at: datetime,
         barber_id: uuid.UUID | None = None,
+        action_id: uuid.UUID | None = None,
     ) -> BookingResult:
         """Book an appointment, resolving barber assignment and handling concurrency conflicts.
 
@@ -245,6 +247,7 @@ class BookingService:
             service_id: ID of the service.
             starts_at: Timezone-aware appointment start datetime.
             barber_id: Optional barber ID. If None, deterministically selects an available barber.
+            action_id: Optional action idempotency UUID. If already executed, returns cached result.
 
         Returns:
             BookingResult with the persisted appointment.
@@ -264,6 +267,7 @@ class BookingService:
 
         now_utc = self._clock.now()
         starts_at_utc = starts_at.astimezone(UTC)
+        effective_action_id = action_id or uuid.uuid4()
 
         if starts_at_utc <= now_utc:
             raise SlotInThePastError(f"Appointment start {starts_at.isoformat()} is in the past.")
@@ -293,6 +297,14 @@ class BookingService:
             selected_barber_id: uuid.UUID | None = None
             try:
                 async with self._uow_factory() as uow:
+                    existing_action = await uow.booking_actions.get_by_id(effective_action_id)
+                    if existing_action is not None:
+                        existing_appt = await uow.appointments.get_by_id(
+                            existing_action.appointment_id
+                        )
+                        if existing_appt is not None:
+                            return BookingResult(appointment=existing_appt)
+
                     service = await uow.services.get_by_id(service_id)
                     if service is None or not service.active:
                         raise ServiceNotFoundError(f"Service {service_id} not found or inactive.")
@@ -363,7 +375,37 @@ class BookingService:
                         ends_at=ends_at_utc,
                         price_cents=service.price_cents,
                     )
+                    await uow.booking_actions.record_action(
+                        action_id=effective_action_id,
+                        kind="book",
+                        appointment_id=appt.id,
+                        result={
+                            "appointment_id": str(appt.id),
+                            "customer_id": str(customer.id),
+                            "barber_id": str(selected_barber_id),
+                            "service_id": str(service.id),
+                            "starts_at": starts_at_utc.isoformat(),
+                            "ends_at": ends_at_utc.isoformat(),
+                            "price_cents": service.price_cents,
+                            "status": appt.status,
+                        },
+                    )
                     return BookingResult(appointment=appt)
+
+            except ActionAlreadyExistsError:
+                logger.info(
+                    "Action %s already committed concurrently; retrieving result.",
+                    effective_action_id,
+                )
+                async with self._uow_factory() as lookup_uow:
+                    action_record = await lookup_uow.booking_actions.get_by_id(effective_action_id)
+                    if action_record is not None:
+                        existing_appt = await lookup_uow.appointments.get_by_id(
+                            action_record.appointment_id
+                        )
+                        if existing_appt is not None:
+                            return BookingResult(appointment=existing_appt)
+                raise
 
             except SlotUnavailableError as exc:
                 last_conflict_exc = exc
@@ -402,6 +444,7 @@ class BookingService:
         appointment_id: uuid.UUID,
         customer_phone: str,
         new_starts_at: datetime,
+        action_id: uuid.UUID | None = None,
     ) -> RescheduleResult:
         """Reschedule an existing appointment via in-place UPDATE.
 
@@ -409,6 +452,7 @@ class BookingService:
             appointment_id: ID of the appointment to reschedule.
             customer_phone: E.164 phone of the customer requesting reschedule.
             new_starts_at: Timezone-aware new start datetime.
+            action_id: Optional action idempotency UUID. If already executed, returns cached result.
 
         Returns:
             RescheduleResult with the updated appointment.
@@ -430,6 +474,7 @@ class BookingService:
 
         now_utc = self._clock.now()
         new_starts_at_utc = new_starts_at.astimezone(UTC)
+        effective_action_id = action_id or uuid.uuid4()
 
         if new_starts_at_utc <= now_utc:
             raise SlotInThePastError(
@@ -459,6 +504,12 @@ class BookingService:
 
         try:
             async with self._uow_factory() as uow:
+                existing_action = await uow.booking_actions.get_by_id(effective_action_id)
+                if existing_action is not None:
+                    existing_appt = await uow.appointments.get_by_id(existing_action.appointment_id)
+                    if existing_appt is not None:
+                        return RescheduleResult(appointment=existing_appt)
+
                 appt = await uow.appointments.get_by_id(appointment_id)
                 if appt is None:
                     raise AppointmentNotFoundError(f"Appointment {appointment_id} not found.")
@@ -517,7 +568,33 @@ class BookingService:
                 if updated is None:
                     raise AppointmentNotFoundError(f"Appointment {appointment_id} not found.")
 
+                await uow.booking_actions.record_action(
+                    action_id=effective_action_id,
+                    kind="reschedule",
+                    appointment_id=updated.id,
+                    result={
+                        "appointment_id": str(updated.id),
+                        "starts_at": updated.starts_at.isoformat(),
+                        "ends_at": updated.ends_at.isoformat(),
+                        "status": updated.status,
+                    },
+                )
                 return RescheduleResult(appointment=updated)
+
+        except ActionAlreadyExistsError:
+            logger.info(
+                "Action %s already committed concurrently; retrieving result.",
+                effective_action_id,
+            )
+            async with self._uow_factory() as lookup_uow:
+                action_record = await lookup_uow.booking_actions.get_by_id(effective_action_id)
+                if action_record is not None:
+                    existing_appt = await lookup_uow.appointments.get_by_id(
+                        action_record.appointment_id
+                    )
+                    if existing_appt is not None:
+                        return RescheduleResult(appointment=existing_appt)
+            raise
 
         except SlotUnavailableError as exc:
             # Aborted transaction rolled back by UoW __aexit__; query alternatives in new session
@@ -542,12 +619,14 @@ class BookingService:
         self,
         appointment_id: uuid.UUID,
         customer_phone: str,
+        action_id: uuid.UUID | None = None,
     ) -> CancelResult:
         """Cancel an existing appointment. Operation is idempotent for already cancelled bookings.
 
         Args:
             appointment_id: ID of the appointment to cancel.
             customer_phone: E.164 phone of the customer requesting cancellation.
+            action_id: Optional action idempotency UUID. If already executed, returns cached result.
 
         Returns:
             CancelResult with the cancelled appointment.
@@ -558,30 +637,65 @@ class BookingService:
             AppointmentInThePastError: If appointment start time has already passed.
         """
         now_utc = self._clock.now()
+        effective_action_id = action_id or uuid.uuid4()
 
-        async with self._uow_factory() as uow:
-            appt = await uow.appointments.get_by_id(appointment_id)
-            if appt is None:
-                raise AppointmentNotFoundError(f"Appointment {appointment_id} not found.")
+        try:
+            async with self._uow_factory() as uow:
+                existing_action = await uow.booking_actions.get_by_id(effective_action_id)
+                if existing_action is not None:
+                    existing_appt = await uow.appointments.get_by_id(existing_action.appointment_id)
+                    if existing_appt is not None:
+                        return CancelResult(appointment=existing_appt)
 
-            customer = await uow.customers.get_by_id(appt.customer_id)
-            if customer is None or customer.phone != customer_phone:
-                raise NotAppointmentOwnerError(
-                    f"Appointment {appointment_id} does not belong to customer {customer_phone}."
+                appt = await uow.appointments.get_by_id(appointment_id)
+                if appt is None:
+                    raise AppointmentNotFoundError(f"Appointment {appointment_id} not found.")
+
+                customer = await uow.customers.get_by_id(appt.customer_id)
+                if customer is None or customer.phone != customer_phone:
+                    raise NotAppointmentOwnerError(
+                        f"Appointment {appointment_id} does not belong to {customer_phone}."
+                    )
+
+                # Idempotent cancel: return if already cancelled
+                if appt.status == AppointmentStatus.CANCELLED.value:
+                    await uow.booking_actions.record_action(
+                        action_id=effective_action_id,
+                        kind="cancel",
+                        appointment_id=appt.id,
+                        result={"appointment_id": str(appt.id), "status": appt.status},
+                    )
+                    return CancelResult(appointment=appt)
+
+                if appt.starts_at <= now_utc:
+                    raise AppointmentInThePastError(
+                        f"Cannot cancel an appointment that has already passed "
+                        f"({appt.starts_at.isoformat()})."
+                    )
+
+                cancelled = await uow.appointments.cancel(appointment_id)
+                if cancelled is None:
+                    raise AppointmentNotFoundError(f"Appointment {appointment_id} not found.")
+
+                await uow.booking_actions.record_action(
+                    action_id=effective_action_id,
+                    kind="cancel",
+                    appointment_id=cancelled.id,
+                    result={"appointment_id": str(cancelled.id), "status": cancelled.status},
                 )
+                return CancelResult(appointment=cancelled)
 
-            # Idempotent cancel: return if already cancelled
-            if appt.status == AppointmentStatus.CANCELLED.value:
-                return CancelResult(appointment=appt)
-
-            if appt.starts_at <= now_utc:
-                raise AppointmentInThePastError(
-                    f"Cannot cancel an appointment that has already passed "
-                    f"({appt.starts_at.isoformat()})."
-                )
-
-            cancelled = await uow.appointments.cancel(appointment_id)
-            if cancelled is None:
-                raise AppointmentNotFoundError(f"Appointment {appointment_id} not found.")
-
-            return CancelResult(appointment=cancelled)
+        except ActionAlreadyExistsError:
+            logger.info(
+                "Action %s already committed concurrently; retrieving result.",
+                effective_action_id,
+            )
+            async with self._uow_factory() as lookup_uow:
+                action_record = await lookup_uow.booking_actions.get_by_id(effective_action_id)
+                if action_record is not None:
+                    existing_appt = await lookup_uow.appointments.get_by_id(
+                        action_record.appointment_id
+                    )
+                    if existing_appt is not None:
+                        return CancelResult(appointment=existing_appt)
+            raise
