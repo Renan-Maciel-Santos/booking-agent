@@ -13,7 +13,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.30",
     "asyncpg>=0.29",
     "alembic>=1.13",
-    "openai-agents>=0.2",
+    "openai>=1.50",
     "tzdata>=2026.5",
 ]
 
@@ -77,8 +77,9 @@ asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 # Make the tests package importable (for tests.fakes).
 pythonpath = ["."]
-addopts = "--strict-markers -ra"
+addopts = "--strict-markers -ra -m 'not eval'"
 markers = [
     "unit: fast tests with no external dependencies",
     "integration: tests that need Docker (real PostgreSQL via testcontainers)",
+    "eval: opt-in evaluation suite running against real LLM providers",
 ]

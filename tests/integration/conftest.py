@@ -37,12 +37,15 @@ def postgres_container() -> Iterator[PostgresContainer]:
     os.environ["POSTGRES_DB"] = container.dbname
     os.environ["POSTGRES_HOST"] = container.get_container_host_ip()
     os.environ["POSTGRES_PORT"] = str(container.get_exposed_port(5432))
+    os.environ["LLM_PROVIDER"] = "fake"
     get_settings.cache_clear()
 
     try:
         yield container
     finally:
         container.stop()
+        os.environ.pop("LLM_PROVIDER", None)
+        get_settings.cache_clear()
 
 
 @pytest.fixture(scope="session")
