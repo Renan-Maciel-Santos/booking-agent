@@ -23,6 +23,7 @@ from booking_agent.domain.ports import (
     BarberRepositoryPort,
     BookingActionRepositoryPort,
     BusinessHoursRepositoryPort,
+    Clock,
     ConversationStateRepositoryPort,
     CustomerRepositoryPort,
     ProcessedMessageRepositoryPort,
@@ -298,10 +299,12 @@ class FakeConversationStateRepository:
         self,
         store: InMemoryDataStore,
         staged_states: dict[str, ConversationState],
+        clock: Clock | None = None,
     ) -> None:
         """Store reference to shared store and staged states."""
         self._store = store
         self._staged = staged_states
+        self._clock = clock
 
     async def get(self, phone: str, for_update: bool = False) -> ConversationState | None:
         """Fetch dialogue state for a phone number."""
@@ -316,7 +319,7 @@ class FakeConversationStateRepository:
     ) -> ConversationState:
         """Insert or update conversation state."""
         state = self._staged.get(phone)
-        now = datetime.now(UTC)
+        now = self._clock.now() if self._clock is not None else datetime.now(UTC)
         if state is None:
             state = ConversationState(
                 phone=phone,
@@ -340,10 +343,12 @@ class FakeProcessedMessageRepository:
         self,
         store: InMemoryDataStore,
         staged_messages: dict[str, ProcessedMessage],
+        clock: Clock | None = None,
     ) -> None:
         """Store reference to shared store and staged messages."""
         self._store = store
         self._staged = staged_messages
+        self._clock = clock
 
     async def get(self, message_id: str) -> ProcessedMessage | None:
         """Fetch a processed message record by primary key."""
@@ -352,7 +357,7 @@ class FakeProcessedMessageRepository:
 
     async def acquire(self, message_id: str, timeout_seconds: int = 300) -> MessageAcquisition:
         """Atomically acquire processing rights for a message ID."""
-        now = datetime.now(UTC)
+        now = self._clock.now() if self._clock is not None else datetime.now(UTC)
         existing = self._staged.get(message_id)
         if existing is None:
             new_msg = ProcessedMessage(
@@ -387,9 +392,10 @@ class FakeProcessedMessageRepository:
         """Mark a message as done with optional response_text."""
         existing = self._staged.get(message_id)
         if existing is not None:
+            now = self._clock.now() if self._clock is not None else datetime.now(UTC)
             existing.status = MessageStatus.DONE.value
             existing.response_text = response_text
-            existing.updated_at = datetime.now(UTC)
+            existing.updated_at = now
             return True
         return False
 
@@ -397,8 +403,9 @@ class FakeProcessedMessageRepository:
         """Mark a message as failed."""
         existing = self._staged.get(message_id)
         if existing is not None:
+            now = self._clock.now() if self._clock is not None else datetime.now(UTC)
             existing.status = MessageStatus.FAILED.value
-            existing.updated_at = datetime.now(UTC)
+            existing.updated_at = now
             return True
         return False
 
@@ -406,9 +413,14 @@ class FakeProcessedMessageRepository:
 class FakeUnitOfWork:
     """Unit of work managing transactions over in-memory repositories."""
 
-    def __init__(self, store: InMemoryDataStore) -> None:
+    def __init__(
+        self,
+        store: InMemoryDataStore,
+        clock: Clock | None = None,
+    ) -> None:
         """Initialize with parent store and stage local copies."""
         self._store = store
+        self._clock = clock
         self._staged_appointments = deepcopy(store.appointments)
         self._staged_booking_actions = deepcopy(store.booking_actions)
         self._staged_conversation_states = deepcopy(store.conversation_states)
@@ -420,11 +432,11 @@ class FakeUnitOfWork:
         self._booking_actions = FakeBookingActionRepository(store, self._staged_booking_actions)
         self._business_hours = FakeBusinessHoursRepository(store)
         self._conversation_states = FakeConversationStateRepository(
-            store, self._staged_conversation_states
+            store, self._staged_conversation_states, clock=clock
         )
         self._customers = FakeCustomerRepository(store, self._staged_customers)
         self._processed_messages = FakeProcessedMessageRepository(
-            store, self._staged_processed_messages
+            store, self._staged_processed_messages, clock=clock
         )
         self._services = FakeServiceRepository(store)
 
@@ -490,10 +502,15 @@ class FakeUnitOfWork:
 class FakeUnitOfWorkFactory:
     """Factory producing FakeUnitOfWork instances sharing a data store."""
 
-    def __init__(self, store: InMemoryDataStore | None = None) -> None:
+    def __init__(
+        self,
+        store: InMemoryDataStore | None = None,
+        clock: Clock | None = None,
+    ) -> None:
         """Initialize with optional existing store or create a new one."""
         self.store = store or InMemoryDataStore()
+        self.clock = clock
 
     def __call__(self) -> UnitOfWork:
         """Create and return a new FakeUnitOfWork."""
-        return FakeUnitOfWork(self.store)
+        return FakeUnitOfWork(self.store, clock=self.clock)
