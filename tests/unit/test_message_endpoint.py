@@ -18,6 +18,7 @@ from booking_agent.api.dependencies import (
 from booking_agent.api.rate_limiter import PhoneRateLimiter, get_rate_limiter
 from booking_agent.api.security import compute_signature
 from booking_agent.config import Settings
+from booking_agent.domain.errors import LLMConfigurationError, LLMUnavailableError
 from booking_agent.main import create_app
 from booking_agent.services.conversation_service import ConversationService, TurnResult
 from tests.fakes.fake_clock import FakeClock
@@ -384,6 +385,71 @@ async def test_phone_masked_and_text_absent_from_logs(
     assert any(getattr(r, "phone_masked", None) == "+5511*****8888" for r in caplog.records)
     # 4. Message text must not exist in any record's attribute dictionary
     assert not any(sensitive_text in str(v) for r in caplog.records for v in vars(r).values())
+
+
+async def test_llm_configuration_error_returns_503_and_logs_error(
+    test_settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Arrange: LLM configuration error (requires operator intervention)
+    clock = FakeClock()
+    settings = test_settings.model_copy(update={"log_level": "INFO"})
+    payload = {
+        "message_id": "msg-llm-cfg-err",
+        "phone": "+5511999998888",
+        "text": "Agendar amanhã",
+        "timestamp": clock.now().isoformat(),
+    }
+    raw_body = json.dumps(payload).encode("utf-8")
+    headers = _sign(raw_body, settings.webhook_secret.get_secret_value(), fake_clock=clock)
+
+    service_mock = AsyncMock(spec=ConversationService)
+    service_mock.process_turn.side_effect = LLMConfigurationError("Invalid model configuration")
+
+    # Act
+    with caplog.at_level(logging.INFO):
+        async with _build_test_client(
+            settings, clock, conversation_service_override=service_mock
+        ) as client:
+            response = await client.post("/v1/messages", content=raw_body, headers=headers)
+
+    # Assert
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) >= 1
+    assert any("LLM configuration error" in r.getMessage() for r in error_records)
+
+
+async def test_llm_unavailable_error_returns_503_and_logs_warning(
+    test_settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Arrange: transient LLM outage (temporary external failure)
+    clock = FakeClock()
+    settings = test_settings.model_copy(update={"log_level": "INFO"})
+    payload = {
+        "message_id": "msg-llm-unavail-err",
+        "phone": "+5511999998888",
+        "text": "Agendar amanhã",
+        "timestamp": clock.now().isoformat(),
+    }
+    raw_body = json.dumps(payload).encode("utf-8")
+    headers = _sign(raw_body, settings.webhook_secret.get_secret_value(), fake_clock=clock)
+
+    service_mock = AsyncMock(spec=ConversationService)
+    service_mock.process_turn.side_effect = LLMUnavailableError("OpenAI connection timed out")
+
+    # Act
+    with caplog.at_level(logging.INFO):
+        async with _build_test_client(
+            settings, clock, conversation_service_override=service_mock
+        ) as client:
+            response = await client.post("/v1/messages", content=raw_body, headers=headers)
+
+    # Assert
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) >= 1
+    assert any("LLM service failure" in r.getMessage() for r in warning_records)
+    assert not any(r.levelname == "ERROR" for r in caplog.records)
 
 
 def test_n8n_workflow_file_is_valid_json() -> None:
