@@ -5,11 +5,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from openai import AsyncOpenAI
 
 from booking_agent.api.middleware import BodySizeLimitMiddleware, RequestIdMiddleware
-from booking_agent.api.routers import health
+from booking_agent.api.routers import health, messages
 from booking_agent.config import Settings, get_settings
 from booking_agent.database.engine import build_engine
 from booking_agent.integrations.llm.fake_intent_parser import FakeIntentParser
@@ -82,5 +85,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(RequestIdMiddleware)
 
+    # Map Pydantic validation errors (extra inputs, format bounds) to HTTP 400 Bad Request
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": jsonable_encoder(exc.errors())},
+        )
+
     app.include_router(health.router)
+    app.include_router(messages.router)
     return app

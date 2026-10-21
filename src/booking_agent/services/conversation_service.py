@@ -2,8 +2,10 @@
 
 import logging
 import re
+import time as time_module
 import uuid
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -33,6 +35,36 @@ from booking_agent.services.templates import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def mask_phone(phone: str) -> str:
+    """Mask phone number preserving country code and last 4 digits for privacy.
+
+    Example: '+5511999998888' -> '+5511*****8888'.
+    """
+    if len(phone) <= 8:
+        return "*" * len(phone)
+    prefix = phone[:5]
+    suffix = phone[-4:]
+    return f"{prefix}*****{suffix}"
+
+
+@dataclass(frozen=True, slots=True)
+class TurnResult:
+    """Outcome and observability telemetry for a processed conversation turn."""
+
+    response_text: str | None
+    status_code: int = 200
+    outcome: str = "ok"
+    fast_path: bool = False
+    stage_from: str | None = None
+    stage_to: str | None = None
+    phase1_lease_ms: float = 0.0
+    phase2_llm_ms: float = 0.0
+    phase3_state_ms: float = 0.0
+    phase4_action_ms: float = 0.0
+    total_duration_ms: float = 0.0
+
 
 _AFFIRMATIVE_TOKENS: set[str] = {
     "sim",
@@ -217,7 +249,14 @@ class ConversationService:
         self._business_tz = ZoneInfo(settings.business_timezone)
 
     async def handle_message(self, message_id: str, phone: str, text: str) -> str:
-        """Process an incoming chat message across the 6 orchestration phases."""
+        """Process an incoming chat message and return response text for user."""
+        result = await self.process_turn(message_id=message_id, phone=phone, text=text)
+        return result.response_text or ""
+
+    async def process_turn(self, message_id: str, phone: str, text: str) -> TurnResult:
+        """Process an incoming chat message across the 6 phases, returning rich telemetry."""
+        t0 = time_module.perf_counter()
+
         # -------------------------------------------------------------
         # Phase 1: Atomic Idempotency Lease (Short Tx)
         # -------------------------------------------------------------
@@ -226,13 +265,32 @@ class ConversationService:
                 message_id=message_id,
                 timeout_seconds=self._settings.message_lease_timeout_seconds,
             )
+        t1 = time_module.perf_counter()
+        phase1_ms = (t1 - t0) * 1000
+
         if not acquisition.acquired:
+            total_ms = (time_module.perf_counter() - t0) * 1000
             if acquisition.status == MessageStatus.DONE:
-                return acquisition.response_text or render_template(TemplateKey.GREETING_HELP)
-            return render_template(TemplateKey.REQUEST_PROCESSING)
+                return TurnResult(
+                    response_text=acquisition.response_text
+                    or render_template(TemplateKey.GREETING_HELP),
+                    status_code=200,
+                    outcome="idempotent_replay",
+                    phase1_lease_ms=phase1_ms,
+                    total_duration_ms=total_ms,
+                )
+            # Replayed message is still actively processing within lease:
+            # HTTP 202 Accepted, response_text=None
+            return TurnResult(
+                response_text=None,
+                status_code=202,
+                outcome="duplicate_in_progress",
+                phase1_lease_ms=phase1_ms,
+                total_duration_ms=total_ms,
+            )
 
         try:
-            return await self._process_turn(message_id, phone, text)
+            return await self._process_turn(message_id, phone, text, t0, phase1_ms)
         except Exception:
             # Catch-all is strictly for state cleanup (releasing the message lease by marking
             # it as failed in its own short transaction) before re-raising the original exception;
@@ -241,7 +299,14 @@ class ConversationService:
                 await uow.processed_messages.mark_failed(message_id)
             raise
 
-    async def _process_turn(self, message_id: str, phone: str, text: str) -> str:
+    async def _process_turn(
+        self,
+        message_id: str,
+        phone: str,
+        text: str,
+        t0: float = 0.0,
+        phase1_ms: float = 0.0,
+    ) -> TurnResult:
         """Internal turn processor following Phases 2 through 6."""
         # -------------------------------------------------------------
         # Phase 2: Candidate Fast-Path Pre-Evaluation & LLM Extraction
@@ -255,19 +320,34 @@ class ConversationService:
             fast_path_candidate = "negative"
 
         intent: BookingIntent | None = None
+        phase2_llm_ms = 0.0
         if fast_path_candidate is None:
+            t_llm0 = time_module.perf_counter()
             try:
                 intent = await self._intent_parser.parse(user_message=text)
+                phase2_llm_ms = (time_module.perf_counter() - t_llm0) * 1000
             except LLMInvalidOutputError:
+                phase2_llm_ms = (time_module.perf_counter() - t_llm0) * 1000
                 clarify_resp = render_template(TemplateKey.CLARIFICATION_PROMPT)
                 async with self._uow_factory() as uow:
                     await uow.processed_messages.mark_done(message_id, response_text=clarify_resp)
-                return clarify_resp
+                total_ms = (time_module.perf_counter() - t0) * 1000
+                return TurnResult(
+                    response_text=clarify_resp,
+                    status_code=200,
+                    outcome="llm_clarification",
+                    fast_path=False,
+                    phase1_lease_ms=phase1_ms,
+                    phase2_llm_ms=phase2_llm_ms,
+                    total_duration_ms=total_ms,
+                )
 
         # -------------------------------------------------------------
         # Phase 3: State Lock, TTL, Fast-Path Revalidation & Slot Merge (Short Tx)
         # -------------------------------------------------------------
+        t3_start = time_module.perf_counter()
         stage: str
+        initial_stage: str = ConversationStage.IDLE.value
         slots: dict[str, Any]
         response: str | None = None
         needs_llm_outside_lock = False
@@ -276,10 +356,12 @@ class ConversationService:
             state = await uow.conversation_states.get(phone, for_update=True)
             if state is None:
                 stage = ConversationStage.IDLE.value
+                initial_stage = stage
                 slots = {}
                 is_expired = False
             else:
                 stage = state.stage
+                initial_stage = stage
                 slots = deepcopy(state.slots)
                 elapsed = self._clock.now() - state.updated_at
                 is_expired = elapsed > timedelta(minutes=self._settings.conversation_ttl_minutes)
@@ -293,7 +375,19 @@ class ConversationService:
                 if was_in_progress:
                     response = render_template(TemplateKey.SESSION_EXPIRED)
                     await uow.processed_messages.mark_done(message_id, response_text=response)
-                    return response
+                    phase3_ms = (time_module.perf_counter() - t3_start) * 1000
+                    total_ms = (time_module.perf_counter() - t0) * 1000
+                    return TurnResult(
+                        response_text=response,
+                        status_code=200,
+                        outcome="session_expired",
+                        stage_from=initial_stage,
+                        stage_to=stage,
+                        phase1_lease_ms=phase1_ms,
+                        phase2_llm_ms=phase2_llm_ms,
+                        phase3_state_ms=phase3_ms,
+                        total_duration_ms=total_ms,
+                    )
 
             # If stage is EXECUTING: either concurrent execution, or stuck execution
             if stage == ConversationStage.EXECUTING.value:
@@ -307,7 +401,19 @@ class ConversationService:
                 else:
                     response = render_template(TemplateKey.REQUEST_PROCESSING)
                     await uow.processed_messages.mark_done(message_id, response_text=response)
-                    return response
+                    phase3_ms = (time_module.perf_counter() - t3_start) * 1000
+                    total_ms = (time_module.perf_counter() - t0) * 1000
+                    return TurnResult(
+                        response_text=response,
+                        status_code=200,
+                        outcome="request_processing",
+                        stage_from=initial_stage,
+                        stage_to=stage,
+                        phase1_lease_ms=phase1_ms,
+                        phase2_llm_ms=phase2_llm_ms,
+                        phase3_state_ms=phase3_ms,
+                        total_duration_ms=total_ms,
+                    )
 
             # Customer recognition: lookup registered customer name
             customer = await uow.customers.get_by_phone(phone)
@@ -328,20 +434,49 @@ class ConversationService:
                         await uow.conversation_states.upsert(phone, stage, slots)
                         response = render_template(TemplateKey.FLOW_CANCELLED)
                         await uow.processed_messages.mark_done(message_id, response_text=response)
-                        return response
+                        phase3_ms = (time_module.perf_counter() - t3_start) * 1000
+                        total_ms = (time_module.perf_counter() - t0) * 1000
+                        return TurnResult(
+                            response_text=response,
+                            status_code=200,
+                            outcome="flow_cancelled",
+                            fast_path=True,
+                            stage_from=initial_stage,
+                            stage_to=stage,
+                            phase1_lease_ms=phase1_ms,
+                            phase2_llm_ms=phase2_llm_ms,
+                            phase3_state_ms=phase3_ms,
+                            total_duration_ms=total_ms,
+                        )
                 else:
                     # Candidate discarded because locked state was not AWAITING_CONFIRMATION
                     needs_llm_outside_lock = True
 
         # If fast-path candidate was discarded, parse intent outside of lock
         if needs_llm_outside_lock:
+            t_llm1 = time_module.perf_counter()
             try:
                 intent = await self._intent_parser.parse(user_message=text)
+                phase2_llm_ms += (time_module.perf_counter() - t_llm1) * 1000
             except LLMInvalidOutputError:
+                phase2_llm_ms += (time_module.perf_counter() - t_llm1) * 1000
                 response = render_template(TemplateKey.CLARIFICATION_PROMPT)
                 async with self._uow_factory() as uow:
                     await uow.processed_messages.mark_done(message_id, response_text=response)
-                return response
+                phase3_ms = (time_module.perf_counter() - t3_start) * 1000
+                total_ms = (time_module.perf_counter() - t0) * 1000
+                return TurnResult(
+                    response_text=response,
+                    status_code=200,
+                    outcome="llm_clarification",
+                    fast_path=False,
+                    stage_from=initial_stage,
+                    stage_to=stage,
+                    phase1_lease_ms=phase1_ms,
+                    phase2_llm_ms=phase2_llm_ms,
+                    phase3_state_ms=phase3_ms,
+                    total_duration_ms=total_ms,
+                )
 
         # If not EXECUTING, resolve state machine transition inside short Tx
         if stage != ConversationStage.EXECUTING.value:
@@ -365,14 +500,31 @@ class ConversationService:
                 final_response = response or render_template(TemplateKey.GREETING_HELP)
                 async with self._uow_factory() as uow:
                     await uow.processed_messages.mark_done(message_id, response_text=final_response)
-                return final_response
+                phase3_ms = (time_module.perf_counter() - t3_start) * 1000
+                total_ms = (time_module.perf_counter() - t0) * 1000
+                return TurnResult(
+                    response_text=final_response,
+                    status_code=200,
+                    outcome="turn_progressed",
+                    fast_path=(fast_path_candidate is not None and not needs_llm_outside_lock),
+                    stage_from=initial_stage,
+                    stage_to=stage,
+                    phase1_lease_ms=phase1_ms,
+                    phase2_llm_ms=phase2_llm_ms,
+                    phase3_state_ms=phase3_ms,
+                    total_duration_ms=total_ms,
+                )
+
+        phase3_ms = (time_module.perf_counter() - t3_start) * 1000
 
         # -------------------------------------------------------------
         # Phase 4 & 5: Action Execution & Post-Action State Update
         # -------------------------------------------------------------
+        t4_start = time_module.perf_counter()
         flow = slots.get("flow", "book")
         action_id_str = slots.get("action_id")
         action_id = uuid.UUID(action_id_str) if action_id_str else None
+        outcome = "ok"
 
         if flow == "book":
             service_id = uuid.UUID(slots["service_id"])
@@ -406,6 +558,8 @@ class ConversationService:
                         stage=ConversationStage.IDLE.value,
                         slots={},
                     )
+                stage = ConversationStage.IDLE.value
+                outcome = "booking_confirmed"
                 response = render_template(
                     TemplateKey.BOOKING_SUCCESS,
                     name=customer_name,
@@ -415,6 +569,7 @@ class ConversationService:
                     barber=barber_display,
                 )
             except SlotUnavailableError as exc:
+                outcome = "slot_conflict"
                 alternatives = exc.alternatives
                 alternatives_iso = [dt.isoformat() for dt in alternatives]
                 async with self._uow_factory() as uow:
@@ -425,6 +580,7 @@ class ConversationService:
                         stage=ConversationStage.OFFERING_ALTERNATIVES.value,
                         slots=slots,
                     )
+                stage = ConversationStage.OFFERING_ALTERNATIVES.value
                 if alternatives:
                     formatted_alts = ", ".join(
                         format_time_pt_br(dt.astimezone(self._business_tz).time())
@@ -466,6 +622,8 @@ class ConversationService:
                         stage=ConversationStage.IDLE.value,
                         slots={},
                     )
+                stage = ConversationStage.IDLE.value
+                outcome = "reschedule_confirmed"
                 response = render_template(
                     TemplateKey.RESCHEDULE_SUCCESS,
                     new_date=format_short_date_pt_br(target_date),
@@ -473,6 +631,7 @@ class ConversationService:
                     barber=barber_name,
                 )
             except SlotUnavailableError as exc:
+                outcome = "slot_conflict"
                 alternatives = exc.alternatives
                 alternatives_iso = [dt.isoformat() for dt in alternatives]
                 async with self._uow_factory() as uow:
@@ -483,6 +642,7 @@ class ConversationService:
                         stage=ConversationStage.OFFERING_ALTERNATIVES.value,
                         slots=slots,
                     )
+                stage = ConversationStage.OFFERING_ALTERNATIVES.value
                 if alternatives:
                     formatted_alts = ", ".join(
                         format_time_pt_br(dt.astimezone(self._business_tz).time())
@@ -509,6 +669,8 @@ class ConversationService:
                     stage=ConversationStage.IDLE.value,
                     slots={},
                 )
+            stage = ConversationStage.IDLE.value
+            outcome = "cancel_confirmed"
             cancel_date = (
                 date.fromisoformat(slots["local_date"])
                 if "local_date" in slots
@@ -528,12 +690,28 @@ class ConversationService:
         else:
             response = render_template(TemplateKey.GREETING_HELP)
 
+        phase4_ms = (time_module.perf_counter() - t4_start) * 1000
+
         # -------------------------------------------------------------
         # Phase 6: Finalize & Persist Response Text (Short Tx)
         # -------------------------------------------------------------
         async with self._uow_factory() as uow:
             await uow.processed_messages.mark_done(message_id, response_text=response)
-        return response
+
+        total_ms = (time_module.perf_counter() - t0) * 1000
+        return TurnResult(
+            response_text=response,
+            status_code=200,
+            outcome=outcome,
+            fast_path=(fast_path_candidate is not None and not needs_llm_outside_lock),
+            stage_from=initial_stage,
+            stage_to=stage,
+            phase1_lease_ms=phase1_ms,
+            phase2_llm_ms=phase2_llm_ms,
+            phase3_state_ms=phase3_ms,
+            phase4_action_ms=phase4_ms,
+            total_duration_ms=total_ms,
+        )
 
     async def _transition_state(
         self,
