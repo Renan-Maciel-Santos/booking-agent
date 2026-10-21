@@ -231,7 +231,7 @@ async def test_fast_path_negative_cancels_awaiting_confirmation_flow() -> None:
         phone=phone,
         text="não",
     )
-    assert "solicitação foi cancelada" in resp
+    assert "não fiz nenhum agendamento" in resp
 
     async with uow_factory() as uow:
         st = await uow.conversation_states.get(phone)
@@ -538,7 +538,7 @@ async def test_pode_cancelar_during_booking_confirmation_aborts_without_booking(
     )
 
     # Must abort request (negative outcome), NOT book
-    assert "solicitação foi cancelada" in resp
+    assert "não fiz nenhum agendamento" in resp
 
     async with uow_factory() as uow:
         st = await uow.conversation_states.get(phone)
@@ -1036,3 +1036,55 @@ def test_ambiguous_cancellation_phrases_do_not_produce_fast_path_candidate(
     as fast-path candidates.
     """
     assert classify_fast_path_candidate(ambiguous_phrase) is None
+
+
+@pytest.mark.unit
+async def test_cancel_confirmation_negative_keeps_active_and_avoids_cancelad() -> None:
+    """Saying 'não' in AWAITING_CONFIRMATION for cancel flow keeps appointment CONFIRMED,
+    returns the flow-specific message, and does not contain the word 'cancelad'.
+    """
+    conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999993001"
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Nao Cancela", phone=phone)
+        appt = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=clock.now() + timedelta(days=1),
+            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+
+    # 1. Turn 1: Ask to cancel -> advances to AWAITING_CONFIRMATION with flow=CANCEL
+    intent_parser._responses["quero cancelar"] = BookingIntent(intent=IntentType.CANCEL)
+    resp1 = await conv_service.handle_message(
+        message_id="msg_cancel_ask_no",
+        phone=phone,
+        text="quero cancelar",
+    )
+    assert "Deseja realmente cancelar seu agendamento" in resp1
+
+    # 2. Turn 2: User says "não" to back out
+    resp2 = await conv_service.handle_message(
+        message_id="msg_cancel_say_no",
+        phone=phone,
+        text="não",
+    )
+
+    # Verify flow-specific back-out response
+    assert resp2 == "Tudo bem, não cancelei nada: seu agendamento continua confirmado."
+    assert "cancelad" not in resp2.lower()
+
+    # Verify appointment remains CONFIRMED in the repository
+    async with uow_factory() as uow:
+        appt_after = await uow.appointments.get_by_id(appt.id)
+        assert appt_after is not None
+        assert appt_after.status == AppointmentStatus.CONFIRMED.value
+
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.IDLE.value
+        assert st.slots == {}

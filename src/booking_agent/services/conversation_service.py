@@ -33,6 +33,7 @@ from booking_agent.services.templates import (
     format_currency_brl,
     format_short_date_pt_br,
     format_time_pt_br,
+    render_flow_cancelled,
     render_template,
 )
 
@@ -536,10 +537,10 @@ class ConversationService:
                         await uow.conversation_states.upsert(phone, stage, slots)
                         # Lock released upon exiting block; advances to Phase 4
                     else:
+                        response = render_flow_cancelled(validated_flow)
                         stage = ConversationStage.IDLE.value
                         slots = {}
                         await uow.conversation_states.upsert(phone, stage, slots)
-                        response = render_template(TemplateKey.FLOW_CANCELLED)
                         await uow.processed_messages.mark_done(message_id, response_text=response)
                         phase3_ms = (time_module.perf_counter() - t3_start) * 1000
                         total_ms = (time_module.perf_counter() - t0) * 1000
@@ -860,10 +861,11 @@ class ConversationService:
                 )
             slots["flow"] = flow.value
             if normalized_msg in _NEGATIVE_TOKENS:
+                response = render_flow_cancelled(flow)
                 return (
                     ConversationStage.IDLE.value,
                     {},
-                    render_template(TemplateKey.FLOW_CANCELLED),
+                    response,
                 )
             candidates = slots.get("candidate_appointment_ids", [])
             selected_idx = _extract_selection_index(text, len(candidates))
@@ -957,10 +959,11 @@ class ConversationService:
                 )
             slots["flow"] = flow.value
             if normalized_msg in _NEGATIVE_TOKENS:
+                response = render_flow_cancelled(flow)
                 return (
                     ConversationStage.IDLE.value,
                     {},
-                    render_template(TemplateKey.FLOW_CANCELLED),
+                    response,
                 )
             alts = slots.get("alternative_slots", [])
             chosen_idx = _extract_alternative_index(text, alts)
@@ -1025,10 +1028,11 @@ class ConversationService:
                         slots,
                         "",
                     )
+                response = render_flow_cancelled(pending_flow)
                 return (
                     ConversationStage.IDLE.value,
                     {},
-                    render_template(TemplateKey.FLOW_CANCELLED),
+                    response,
                 )
             if intent:
                 has_updates = False

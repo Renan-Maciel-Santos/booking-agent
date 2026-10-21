@@ -2,6 +2,9 @@
 
 from datetime import date, datetime, time
 from enum import StrEnum
+from typing import assert_never
+
+from booking_agent.domain.enums import ConversationFlow
 
 _MONTH_NAMES_PT: list[str] = [
     "janeiro",
@@ -45,6 +48,9 @@ class TemplateKey(StrEnum):
     CONFIRM_CANCEL = "confirm_cancel"
     CANCEL_SUCCESS = "cancel_success"
     FLOW_CANCELLED = "flow_cancelled"
+    FLOW_CANCELLED_BOOK = "flow_cancelled_book"
+    FLOW_CANCELLED_RESCHEDULE = "flow_cancelled_reschedule"
+    FLOW_CANCELLED_CANCEL = "flow_cancelled_cancel"
     CHOOSE_APPOINTMENT = "choose_appointment"
     NO_APPOINTMENTS_FOUND = "no_appointments_found"
     SERVICE_NOT_FOUND = "service_not_found"
@@ -98,6 +104,15 @@ _TEMPLATES: dict[TemplateKey, str] = {
     ),
     TemplateKey.FLOW_CANCELLED: (
         "Tudo bem, a solicitação foi cancelada. Se precisar de mais alguma coisa, estou por aqui!"
+    ),
+    TemplateKey.FLOW_CANCELLED_BOOK: (
+        "Tudo bem, não fiz nenhum agendamento. Se quiser marcar outro horário, é só me chamar!"
+    ),
+    TemplateKey.FLOW_CANCELLED_RESCHEDULE: (
+        "Tudo bem, não alterei nada: seu horário original continua confirmado."
+    ),
+    TemplateKey.FLOW_CANCELLED_CANCEL: (
+        "Tudo bem, não cancelei nada: seu agendamento continua confirmado."
     ),
     TemplateKey.CHOOSE_APPOINTMENT: (
         "Você possui os seguintes agendamentos futuros:\n{appointments_list}\n"
@@ -173,3 +188,23 @@ def render_template(key: TemplateKey, **kwargs: object) -> str:
     """
     tmpl = _TEMPLATES[key]
     return tmpl.format(**kwargs) if kwargs else tmpl
+
+
+def render_flow_cancelled(flow: ConversationFlow) -> str:
+    """Render customer cancellation message specific to active conversation flow.
+
+    Args:
+        flow: Active conversation flow being backed out of.
+
+    Returns:
+        Rendered message template.
+    """
+    match flow:
+        case ConversationFlow.BOOK:
+            return render_template(TemplateKey.FLOW_CANCELLED_BOOK)
+        case ConversationFlow.RESCHEDULE:
+            return render_template(TemplateKey.FLOW_CANCELLED_RESCHEDULE)
+        case ConversationFlow.CANCEL:
+            return render_template(TemplateKey.FLOW_CANCELLED_CANCEL)
+        case _ as unreachable:
+            assert_never(unreachable)

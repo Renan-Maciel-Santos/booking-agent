@@ -2,12 +2,14 @@
 
 from datetime import date, datetime, time
 
+from booking_agent.domain.enums import ConversationFlow
 from booking_agent.services.templates import (
     TemplateKey,
     format_currency_brl,
     format_date_pt_br,
     format_short_date_pt_br,
     format_time_pt_br,
+    render_flow_cancelled,
     render_template,
 )
 
@@ -58,3 +60,19 @@ def test_render_all_templates_without_missing_keys() -> None:
         rendered = render_template(key, **kwargs)
         assert len(rendered) > 0
         assert "{" not in rendered, f"Template {key} had unformatted placeholders!"
+
+
+def test_render_flow_cancelled_specific_messages() -> None:
+    """Verify flow-specific back-out messages for each flow."""
+    assert (
+        render_flow_cancelled(ConversationFlow.BOOK)
+        == "Tudo bem, não fiz nenhum agendamento. Se quiser marcar outro horário, é só me chamar!"
+    )
+    assert (
+        render_flow_cancelled(ConversationFlow.RESCHEDULE)
+        == "Tudo bem, não alterei nada: seu horário original continua confirmado."
+    )
+    assert (
+        render_flow_cancelled(ConversationFlow.CANCEL)
+        == "Tudo bem, não cancelei nada: seu agendamento continua confirmado."
+    )
