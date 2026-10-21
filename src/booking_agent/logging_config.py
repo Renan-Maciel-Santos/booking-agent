@@ -8,8 +8,20 @@ from datetime import UTC, datetime
 # anything else was passed through `extra=` and is treated as context.
 _RESERVED_RECORD_ATTRIBUTES: frozenset[str] = frozenset(
     vars(logging.LogRecord("", 0, "", 0, "", None, None)).keys()
-    | {"message", "asctime", "color_message"}
+    | {"message", "asctime", "color_message", "request_id"}
 )
+
+
+class RequestIdFilter(logging.Filter):
+    """Inject the active correlation ID from contextvars into every LogRecord."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Attach request_id to the record so it is accessible by formatters and caplog."""
+        # Delayed import avoids circular dependency at import time.
+        from booking_agent.api.middleware import request_id_ctx
+
+        record.request_id = request_id_ctx.get()
+        return True
 
 
 class JsonFormatter(logging.Formatter):
@@ -30,6 +42,10 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+        request_id = getattr(record, "request_id", None)
+        if request_id:
+            payload["request_id"] = request_id
+
         extra_fields = {
             key: value
             for key, value in vars(record).items()
@@ -44,15 +60,21 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging(level: str) -> None:
-    """Install the JSON formatter on the root logger.
+    """Install the JSON formatter and correlation filter on the root logger.
 
     Args:
         level: Minimum level name, e.g. "INFO" or "DEBUG".
     """
     # stderr is the container-friendly default destination.
+    req_filter = RequestIdFilter()
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
+    handler.addFilter(req_filter)
+
     root_logger = logging.getLogger()
+    # Add filter to root logger so pytest caplog also receives record.request_id
+    root_logger.addFilter(req_filter)
+
     # Keep external handlers (e.g. pytest caplog) while replacing previous JSON handlers.
     other_handlers = [
         h
