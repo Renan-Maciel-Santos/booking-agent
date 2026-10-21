@@ -1,14 +1,15 @@
 """Unit tests for ConversationService state machine and orchestration with fakes."""
 
+import logging
 import uuid
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from unittest.mock import patch
 
 import pytest
 
 from booking_agent.config import Settings
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
-from booking_agent.domain.enums import AppointmentStatus, ConversationStage
+from booking_agent.domain.enums import AppointmentStatus, ConversationFlow, ConversationStage
 from booking_agent.domain.errors import LLMInvalidOutputError
 from booking_agent.integrations.llm.fake_intent_parser import FakeIntentParser
 from booking_agent.services.booking_service import BookingService
@@ -17,6 +18,7 @@ from booking_agent.services.conversation_service import (
     is_valid_customer_name,
 )
 from booking_agent.services.entity_resolver import EntityResolver
+from booking_agent.services.templates import TemplateKey, render_template
 from tests.conftest import build_test_settings
 from tests.fakes.fake_clock import FakeClock
 from tests.fakes.fake_uow import FakeUnitOfWorkFactory, InMemoryDataStore
@@ -628,3 +630,357 @@ async def test_confirmado_and_confirmada_remain_affirmative_for_booking(
         appts = await uow.appointments.list_by_customer(cust.id)
         assert len(appts) == 1
         assert appts[0].status == AppointmentStatus.CONFIRMED.value
+
+
+@pytest.mark.unit
+async def test_awaiting_confirmation_persists_flow_idle_cancel() -> None:
+    """Entering AWAITING_CONFIRMATION from IDLE with single appointment
+    and cancel intent persists CANCEL flow.
+    """
+    conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999992001"
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Cancel Single", phone=phone)
+        await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=clock.now() + timedelta(days=1),
+            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+
+    intent_parser._responses["quero cancelar"] = BookingIntent(intent=IntentType.CANCEL)
+    resp = await conv_service.handle_message(
+        message_id="msg_test_flow_1",
+        phone=phone,
+        text="quero cancelar",
+    )
+    assert "Deseja realmente cancelar seu agendamento" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert st.slots.get("flow") == ConversationFlow.CANCEL.value
+
+
+@pytest.mark.unit
+async def test_awaiting_confirmation_persists_flow_idle_reschedule_with_datetime() -> None:
+    """Entering AWAITING_CONFIRMATION from IDLE with single appointment
+    and reschedule datetime persists RESCHEDULE flow.
+    """
+    conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999992002"
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Reschedule Single", phone=phone)
+        await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=clock.now() + timedelta(days=1),
+            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+
+    intent_parser._responses["remarcar para amanha as 14h"] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        local_date=date(2026, 11, 21),
+        local_time=time(14, 0),
+    )
+    resp = await conv_service.handle_message(
+        message_id="msg_test_flow_2",
+        phone=phone,
+        text="remarcar para amanha as 14h",
+    )
+    assert "Podemos confirmar a remarcação" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+
+
+@pytest.mark.unit
+async def test_awaiting_confirmation_persists_flow_choosing_cancel() -> None:
+    """Entering AWAITING_CONFIRMATION from CHOOSING_APPOINTMENT for cancel
+    flow persists CANCEL flow.
+    """
+    conv_service, uow_factory, clock, _, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999992003"
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Multi Cancel", phone=phone)
+        appt1 = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=clock.now() + timedelta(days=1),
+            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.CHOOSING_APPOINTMENT.value,
+            slots={
+                "flow": ConversationFlow.CANCEL.value,
+                "candidate_appointment_ids": [str(appt1.id)],
+            },
+        )
+
+    resp = await conv_service.handle_message(
+        message_id="msg_test_flow_3",
+        phone=phone,
+        text="1",
+    )
+    assert "Deseja realmente cancelar seu agendamento" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert st.slots.get("flow") == ConversationFlow.CANCEL.value
+
+
+@pytest.mark.unit
+async def test_awaiting_confirmation_persists_flow_choosing_reschedule_with_datetime() -> None:
+    """Entering AWAITING_CONFIRMATION from CHOOSING_APPOINTMENT for reschedule
+    with datetime persists RESCHEDULE flow.
+    """
+    conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999992004"
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Multi Reschedule", phone=phone)
+        appt1 = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=clock.now() + timedelta(days=1),
+            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.CHOOSING_APPOINTMENT.value,
+            slots={
+                "flow": ConversationFlow.RESCHEDULE.value,
+                "candidate_appointment_ids": [str(appt1.id)],
+            },
+        )
+
+    intent_parser._responses["1 para amanha as 14h"] = BookingIntent(
+        local_date=date(2026, 11, 21),
+        local_time=time(14, 0),
+    )
+    resp = await conv_service.handle_message(
+        message_id="msg_test_flow_4",
+        phone=phone,
+        text="1 para amanha as 14h",
+    )
+    assert "Podemos confirmar a remarcação" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+
+
+@pytest.mark.unit
+async def test_awaiting_confirmation_persists_flow_collecting_reschedule() -> None:
+    """Entering AWAITING_CONFIRMATION from COLLECTING_BOOKING_DETAILS with reschedule
+    datetime persists RESCHEDULE flow.
+    """
+    conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999992005"
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Collecting Reschedule", phone=phone)
+        appt = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=clock.now() + timedelta(days=1),
+            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.COLLECTING_BOOKING_DETAILS.value,
+            slots={
+                "flow": ConversationFlow.RESCHEDULE.value,
+                "appointment_id": str(appt.id),
+                "service_name": "Corte de Cabelo",
+            },
+        )
+
+    intent_parser._responses["amanha as 15h"] = BookingIntent(
+        local_date=date(2026, 11, 21),
+        local_time=time(15, 0),
+    )
+    resp = await conv_service.handle_message(
+        message_id="msg_test_flow_5",
+        phone=phone,
+        text="amanha as 15h",
+    )
+    assert "Podemos confirmar a remarcação" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+
+
+@pytest.mark.unit
+async def test_awaiting_confirmation_persists_flow_offering_alternatives() -> None:
+    """Entering AWAITING_CONFIRMATION from OFFERING_ALTERNATIVES after picking an alternative
+    persists the flow.
+    """
+    conv_service, uow_factory, clock, _, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999992006"
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Alternatives", phone=phone)
+        appt = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=clock.now() + timedelta(days=1),
+            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        alt_dt = clock.now() + timedelta(days=2)
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.OFFERING_ALTERNATIVES.value,
+            slots={
+                "flow": ConversationFlow.RESCHEDULE.value,
+                "appointment_id": str(appt.id),
+                "service_name": "Corte de Cabelo",
+                "alternative_slots": [alt_dt.isoformat()],
+            },
+        )
+
+    resp = await conv_service.handle_message(
+        message_id="msg_test_flow_6",
+        phone=phone,
+        text="1",
+    )
+    assert "Podemos confirmar a remarcação" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+
+
+@pytest.mark.unit
+async def test_awaiting_confirmation_persists_flow_collecting_booking() -> None:
+    """Entering AWAITING_CONFIRMATION from COLLECTING_BOOKING_DETAILS for booking flow
+    persists BOOK flow.
+    """
+    conv_service, uow_factory, _, _, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999992007"
+
+    async with uow_factory() as uow:
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.COLLECTING_BOOKING_DETAILS.value,
+            slots={
+                "flow": ConversationFlow.BOOK.value,
+                "service_id": str(svc_id),
+                "service_name": "Corte de Cabelo",
+                "service_price_cents": 4500,
+                "service_duration_minutes": 30,
+                "barber_id": str(barber_id),
+                "barber_name": "Carlos Barber",
+                "local_date": "2026-11-21",
+                "local_time": "14:00:00",
+                "awaiting": "customer_name",
+            },
+        )
+
+    resp = await conv_service.handle_message(
+        message_id="msg_test_flow_7",
+        phone=phone,
+        text="Roberto Carlos",
+    )
+    assert "Podemos confirmar? Agendamento de" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert st.slots.get("flow") == ConversationFlow.BOOK.value
+
+
+@pytest.mark.unit
+async def test_awaiting_confirmation_missing_flow_fails_safe_and_logs_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """State in AWAITING_CONFIRMATION without flow fails safe on 'sim', logs error,
+    and executes nothing.
+    """
+    conv_service, uow_factory, _, _, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999992008"
+    action_id = uuid.uuid4()
+
+    async with uow_factory() as uow:
+        # Seed AWAITING_CONFIRMATION state with action_id but MISSING 'flow'
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.AWAITING_CONFIRMATION.value,
+            slots={
+                "action_id": str(action_id),
+                "service_id": str(svc_id),
+                "barber_id": str(barber_id),
+                "local_date": "2026-11-21",
+                "local_time": "14:00:00",
+                "customer_name": "Cliente Sem Flow",
+            },
+        )
+
+    with caplog.at_level(logging.ERROR):
+        resp = await conv_service.handle_message(
+            message_id="msg_test_missing_flow",
+            phone=phone,
+            text="sim",
+        )
+
+    # 1. Neutral template asking customer to restart/redo request
+    assert resp == render_template(TemplateKey.GREETING_HELP)
+
+    # 2. State reset to IDLE and slots emptied
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.IDLE.value
+        assert st.slots == {}
+
+        # 3. No appointment was created or executed
+        cust = await uow.customers.get_by_phone(phone)
+        if cust is not None:
+            appts = await uow.appointments.list_by_customer(cust.id)
+            assert len(appts) == 0
+
+    # 4. Structured log event 'missing_pending_flow' logged at ERROR level
+    error_logs = [
+        rec
+        for rec in caplog.records
+        if rec.levelno == logging.ERROR and getattr(rec, "event", None) == "missing_pending_flow"
+    ]
+    assert len(error_logs) >= 1
+    assert getattr(error_logs[0], "conversation_id", None) == phone
+    assert getattr(error_logs[0], "stage", None) == ConversationStage.AWAITING_CONFIRMATION.value
