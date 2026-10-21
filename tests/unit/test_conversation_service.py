@@ -11,7 +11,10 @@ from booking_agent.domain.enums import AppointmentStatus, ConversationStage
 from booking_agent.domain.errors import LLMInvalidOutputError
 from booking_agent.integrations.llm.fake_intent_parser import FakeIntentParser
 from booking_agent.services.booking_service import BookingService
-from booking_agent.services.conversation_service import ConversationService
+from booking_agent.services.conversation_service import (
+    ConversationService,
+    is_valid_customer_name,
+)
 from booking_agent.services.entity_resolver import EntityResolver
 from tests.conftest import build_test_settings
 from tests.fakes.fake_clock import FakeClock
@@ -358,3 +361,107 @@ async def test_llm_invalid_output_error_returns_clarification_prompt() -> None:
         msg = await uow.processed_messages.get("msg_invalid_llm")
         assert msg is not None
         assert msg.status == "done"
+
+
+@pytest.mark.unit
+def test_is_valid_customer_name_validation() -> None:
+    """Validate customer name rules: characters, length, tokens, and command words."""
+    # Valid customer names (accents, spaces, hyphens, apostrophes)
+    assert is_valid_customer_name("Maria Clara") is True
+    assert is_valid_customer_name("João D'Ávila") is True
+    assert is_valid_customer_name("Jean-Luc") is True
+    assert is_valid_customer_name("Luiz Inácio") is True
+    assert is_valid_customer_name("Renan Maciel Santos") is True
+
+    # Questions, commands, and numbers must NEVER be accepted as names
+    assert is_valid_customer_name("na verdade pode ser às 16h?") is False
+    assert is_valid_customer_name("qual o valor?") is False
+    assert is_valid_customer_name("qual o valor") is False
+    assert is_valid_customer_name("quanto custa?") is False
+    assert is_valid_customer_name("quanto custa") is False
+    assert is_valid_customer_name("Carlos 123") is False
+    assert is_valid_customer_name("horarios disponiveis") is False
+
+    # Confirmation and negation tokens must be rejected
+    assert is_valid_customer_name("sim") is False
+    assert is_valid_customer_name("não") is False
+    assert is_valid_customer_name("ok") is False
+    assert is_valid_customer_name("cancela") is False
+
+    # Length boundaries (2 to 60 characters)
+    assert is_valid_customer_name("A") is False
+    assert is_valid_customer_name("   ") is False
+    assert is_valid_customer_name("-" * 10) is False
+    assert is_valid_customer_name("A" * 61) is False
+
+
+@pytest.mark.unit
+async def test_customer_name_only_accepted_when_awaiting_and_valid() -> None:
+    """Verify customer name is only accepted when awaiting, and invalid replies re-prompt."""
+    conv_service, uow_factory, _clock, intent_parser, _, svc_id, _ = _create_unit_fixtures()
+    phone = "+5511999991120"
+
+    # Pre-seed state: service, date, and time are chosen; bot is awaiting customer_name
+    async with uow_factory() as uow:
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.COLLECTING_BOOKING_DETAILS.value,
+            slots={
+                "flow": "book",
+                "service_id": str(svc_id),
+                "service_name": "Corte de Cabelo",
+                "service_price_cents": 4500,
+                "service_duration_minutes": 30,
+                "local_date": "2026-11-21",
+                "local_time": "15:00:00",
+                "awaiting": "customer_name",
+            },
+        )
+
+    # 1. User replies with a time change question: "na verdade pode ser às 16h?"
+    intent_parser._responses["na verdade pode ser às 16h?"] = BookingIntent(
+        intent=IntentType.BOOK,
+        local_time=time(16, 0),
+    )
+    resp1 = await conv_service.handle_message(
+        message_id="msg_name_reject_1",
+        phone=phone,
+        text="na verdade pode ser às 16h?",
+    )
+    # Must re-prompt for customer name; question was NOT saved as customer name
+    assert "qual é o seu nome" in resp1
+    async with uow_factory() as uow:
+        st1 = await uow.conversation_states.get(phone)
+        assert st1 is not None
+        assert "customer_name" not in st1.slots
+        assert st1.slots.get("local_time") == "16:00:00"
+        assert st1.slots.get("awaiting") == "customer_name"
+
+    # 2. User asks for price: "qual o valor?"
+    resp2 = await conv_service.handle_message(
+        message_id="msg_name_reject_2",
+        phone=phone,
+        text="qual o valor?",
+    )
+    assert "qual é o seu nome" in resp2
+    async with uow_factory() as uow:
+        st2 = await uow.conversation_states.get(phone)
+        assert st2 is not None
+        assert "customer_name" not in st2.slots
+        assert st2.slots.get("awaiting") == "customer_name"
+
+    # 3. User provides valid name: "Maria Clara"
+    resp3 = await conv_service.handle_message(
+        message_id="msg_name_accept_3",
+        phone=phone,
+        text="Maria Clara",
+    )
+    # Advanced to confirmation!
+    assert "Podemos confirmar?" in resp3
+    assert "Maria Clara" in resp3
+    async with uow_factory() as uow:
+        st3 = await uow.conversation_states.get(phone)
+        assert st3 is not None
+        assert st3.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert st3.slots.get("customer_name") == "Maria Clara"
+        assert "awaiting" not in st3.slots

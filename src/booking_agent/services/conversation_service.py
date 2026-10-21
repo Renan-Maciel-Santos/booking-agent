@@ -62,6 +62,96 @@ _NEGATIVE_TOKENS: set[str] = {
     "esquece",
 }
 
+_CUSTOMER_NAME_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ '-]{2,60}$")
+
+_KNOWN_COMMANDS: frozenset[str] = frozenset(
+    {
+        "ajuda",
+        "help",
+        "menu",
+        "cancelar",
+        "cancela",
+        "cancelamento",
+        "remarcar",
+        "remarcacao",
+        "remarcação",
+        "agendar",
+        "agendamento",
+        "marcar",
+        "servicos",
+        "serviços",
+        "barbeiros",
+        "horarios",
+        "horários",
+        "valores",
+        "valor",
+        "preco",
+        "precos",
+        "preços",
+        "preço",
+    }
+)
+
+_COMMAND_OR_QUESTION_WORDS: frozenset[str] = frozenset(
+    {
+        "qual",
+        "quais",
+        "quanto",
+        "quantos",
+        "como",
+        "quando",
+        "onde",
+        "porque",
+        "por que",
+        "valor",
+        "valores",
+        "preco",
+        "preço",
+        "precos",
+        "preços",
+        "horario",
+        "horário",
+        "horarios",
+        "horários",
+        "corte",
+        "barba",
+        "cabelo",
+        "barbeiro",
+        "barbeiros",
+        "ajuda",
+        "cancelar",
+        "cancela",
+        "remarcar",
+        "agendar",
+        "marcar",
+    }
+)
+
+
+def is_valid_customer_name(name: str) -> bool:
+    """Validate customer name per conversation rules.
+
+    Accepts 2 to 60 characters composed exclusively of letters (with accents),
+    spaces, hyphens, and apostrophes. Must contain at least one letter.
+    Rejects affirmative/negative tokens, known commands, and question/command phrases.
+    """
+    stripped = name.strip()
+    if not (2 <= len(stripped) <= 60):
+        return False
+    if not _CUSTOMER_NAME_PATTERN.match(stripped):
+        return False
+    if not any(char.isalpha() for char in stripped):
+        return False
+    normalized = normalize_text(stripped)
+    if (
+        normalized in _AFFIRMATIVE_TOKENS
+        or normalized in _NEGATIVE_TOKENS
+        or normalized in _KNOWN_COMMANDS
+    ):
+        return False
+    words = set(normalized.split())
+    return not bool(words & _COMMAND_OR_QUESTION_WORDS)
+
 
 def _extract_selection_index(text: str, max_count: int) -> int | None:
     """Extract an ordinal or numeric index (0-based) from customer reply."""
@@ -867,22 +957,18 @@ class ConversationService:
         if intent and intent.local_time:
             slots["local_time"] = intent.local_time.isoformat()
 
-        # Customer name extraction
-        if intent and intent.customer_name:
-            slots["customer_name"] = intent.customer_name
-        elif (
-            "customer_name" not in slots
-            and "service_id" in slots
-            and "local_date" in slots
-            and "local_time" in slots
-            and text.strip()
-            and not normalized_msg.isdigit()
-        ):
-            # If all booking parameters are present except customer name, capture text as name
-            slots["customer_name"] = text.strip()
+        # Customer name extraction: ONLY when awaiting customer_name
+        if slots.get("awaiting") == "customer_name":
+            raw_candidate = (
+                intent.customer_name if (intent and intent.customer_name) else text.strip()
+            )
+            if is_valid_customer_name(raw_candidate):
+                slots["customer_name"] = raw_candidate
+                slots.pop("awaiting", None)
 
         # Check missing slots in order
         if "service_id" not in slots:
+            slots["awaiting"] = "service"
             svc_list = ", ".join(
                 f"{s.name} ({format_currency_brl(s.price_cents)})" for s in active_services
             )
@@ -893,6 +979,7 @@ class ConversationService:
             )
 
         if "local_date" not in slots or "local_time" not in slots:
+            slots["awaiting"] = "date_time"
             return (
                 ConversationStage.COLLECTING_BOOKING_DETAILS.value,
                 slots,
@@ -903,6 +990,7 @@ class ConversationService:
             )
 
         if "customer_name" not in slots:
+            slots["awaiting"] = "customer_name"
             return (
                 ConversationStage.COLLECTING_BOOKING_DETAILS.value,
                 slots,
@@ -935,6 +1023,7 @@ class ConversationService:
         is_available = any(s == requested_dt for s in avail.slots)
 
         if is_available:
+            slots.pop("awaiting", None)
             slots["action_id"] = str(uuid.uuid4())
             next_stage = ConversationStage.AWAITING_CONFIRMATION.value
             barber_display = slots.get("barber_name") or "qualquer barbeiro disponível"
@@ -951,6 +1040,7 @@ class ConversationService:
 
         # Slot occupied: propose alternatives
         if avail.slots:
+            slots.pop("awaiting", None)
             slots["alternative_slots"] = [dt.isoformat() for dt in avail.slots[:3]]
             formatted_alts = ", ".join(
                 format_time_pt_br(dt.astimezone(self._business_tz).time()) for dt in avail.slots[:3]
