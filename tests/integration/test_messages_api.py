@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from booking_agent.api.dependencies import get_intent_parser
+from booking_agent.api.rate_limiter import PhoneRateLimiter
 from booking_agent.api.security import compute_signature
 from booking_agent.config import Settings
 from booking_agent.database.models import ProcessedMessage
@@ -32,6 +33,11 @@ def app_with_postgres(
     app = create_app(integration_settings)
     app.state.engine = engine
     app.state.clock = clock
+    app.state.rate_limiter = PhoneRateLimiter(
+        clock=clock,
+        max_requests=integration_settings.rate_limit_requests_per_minute,
+        window_seconds=60.0,
+    )
     app.state.intent_parser = FakeIntentParser(
         clock=clock,
         business_timezone=ZoneInfo(integration_settings.business_timezone),

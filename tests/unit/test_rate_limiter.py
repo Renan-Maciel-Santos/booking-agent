@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
-from booking_agent.api.rate_limiter import PhoneRateLimiter
+from booking_agent.api.rate_limiter import PhoneRateLimiter, RateLimiterDependency
 from tests.conftest import build_test_settings
 from tests.fakes.fake_clock import FakeClock
 
@@ -164,8 +164,11 @@ async def test_get_rate_limiter_dependency_in_fastapi(
     app.state.rate_limiter = limiter
 
     @app.post("/test-limit/{phone}")
-    async def limited_endpoint(phone: str) -> JSONResponse:
-        await limiter.check(phone)
+    async def limited_endpoint(
+        phone: str,
+        limiter_dep: RateLimiterDependency,
+    ) -> JSONResponse:
+        await limiter_dep.check(phone)
         return JSONResponse({"status": "ok"})
 
     transport = ASGITransport(app=app)

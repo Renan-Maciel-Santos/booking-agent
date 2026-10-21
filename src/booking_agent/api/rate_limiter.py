@@ -5,8 +5,6 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 
-from booking_agent.api.dependencies import get_app_settings, get_clock
-from booking_agent.config import Settings
 from booking_agent.domain.ports import Clock
 
 
@@ -107,29 +105,16 @@ class PhoneRateLimiter:
             self._prune_stale_locked(cutoff)
 
 
-def get_rate_limiter(
-    request: Request,
-    clock: Annotated[Clock, Depends(get_clock)],
-    settings: Annotated[Settings, Depends(get_app_settings)],
-) -> PhoneRateLimiter:
+def get_rate_limiter(request: Request) -> PhoneRateLimiter:
     """Return the process-wide PhoneRateLimiter instance from app.state.
 
     Args:
         request: FastAPI HTTP request.
-        clock: Injected Clock port.
-        settings: Application settings.
 
     Returns:
         Singleton PhoneRateLimiter bound to application lifespan.
     """
-    limiter: PhoneRateLimiter | None = getattr(request.app.state, "rate_limiter", None)
-    if limiter is None:
-        limiter = PhoneRateLimiter(
-            clock=clock,
-            max_requests=settings.rate_limit_requests_per_minute,
-            window_seconds=60.0,
-        )
-        request.app.state.rate_limiter = limiter
+    limiter: PhoneRateLimiter = request.app.state.rate_limiter
     return limiter
 
 
