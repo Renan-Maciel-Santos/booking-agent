@@ -75,7 +75,23 @@ async def receive_message(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Service temporarily unavailable. Please retry later.",
         ) from exc
-    except (LLMUnavailableError, LLMConfigurationError) as exc:
+    except LLMConfigurationError as exc:
+        logger.error(
+            "LLM configuration error for message %s: %s",
+            payload.message_id,
+            exc,
+            extra={
+                "phone_masked": mask_phone(payload.phone),
+                "message_id": payload.message_id,
+                "text_len": len(payload.text),
+                "outcome": "llm_configuration_error",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporarily unavailable. Please retry later.",
+        ) from exc
+    except LLMUnavailableError as exc:
         logger.warning(
             "LLM service failure for message %s: %s",
             payload.message_id,
