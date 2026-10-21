@@ -1088,3 +1088,61 @@ async def test_cancel_confirmation_negative_keeps_active_and_avoids_cancelad() -
         assert st is not None
         assert st.stage == ConversationStage.IDLE.value
         assert st.slots == {}
+
+
+@pytest.mark.unit
+async def test_investigation_a6_awaiting_confirmation_cancel_flow() -> None:
+    """A6 Investigation: test whether LLM output for ambiguous phrase in AWAITING_CONFIRMATION
+    CANCEL flow can reach EXECUTING.
+    """
+    conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999994001"
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Investigacao A6", phone=phone)
+        appt = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=clock.now() + timedelta(days=1),
+            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        action_id = uuid.uuid4()
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.AWAITING_CONFIRMATION.value,
+            slots={
+                "flow": ConversationFlow.CANCEL.value,
+                "appointment_id": str(appt.id),
+                "action_id": str(action_id),
+                "service_name": "Corte de Cabelo",
+                "barber_name": "Carlos Barber",
+            },
+        )
+
+    # Mock the LLM to return the most affirmative intent possible:
+    # A cancellation intent
+    intent_parser._responses["não pode cancelar"] = BookingIntent(
+        intent=IntentType.CANCEL,
+    )
+
+    turn_result = await conv_service.process_turn(
+        message_id="msg_investigation_a6",
+        phone=phone,
+        text="não pode cancelar",
+    )
+
+    assert turn_result.stage_to == ConversationStage.AWAITING_CONFIRMATION.value
+    assert turn_result.outcome == "turn_progressed"
+    assert turn_result.response_text == render_template(TemplateKey.CLARIFICATION_PROMPT)
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        appt_after = await uow.appointments.get_by_id(appt.id)
+
+    assert st is not None
+    assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+    assert appt_after is not None
+    assert appt_after.status == AppointmentStatus.CONFIRMED
