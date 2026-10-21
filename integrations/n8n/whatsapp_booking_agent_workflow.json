@@ -1,0 +1,364 @@
+{
+  "name": "WhatsApp Booking Agent Integration",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhook/whatsapp",
+        "options": {}
+      },
+      "id": "node-webhook-inbound",
+      "name": "WhatsApp Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-has-message",
+              "leftValue": "={{ $json.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.type }}",
+              "rightValue": "text",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-filter-text-messages",
+      "name": "Filter Incoming Text Messages",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract canonical message data\n// Original WhatsApp timestamp must be preserved (not new Date())\nconst rawEntry = $input.first().json.body.entry[0].changes[0].value;\nconst message = rawEntry.messages[0];\nconst originTimestamp = new Date(Number(message.timestamp) * 1000).toISOString();\n\nconst canonicalPayload = {\n  message_id: message.id,\n  phone: message.from.startsWith('+') ? message.from : `+${message.from}`,\n  text: message.text.body,\n  timestamp: originTimestamp\n};\n\n// Compute HMAC-SHA256 signature\nconst crypto = require('crypto');\nconst secret = $env.WEBHOOK_SECRET || 'secret-webhook-key';\nconst nowEpoch = Math.floor(Date.now() / 1000).toString();\nconst payloadString = JSON.stringify(canonicalPayload);\nconst signaturePayload = `${nowEpoch}.${payloadString}`;\nconst hmacDigest = crypto.createHmac('sha256', secret).update(signaturePayload).digest('hex');\nconst signatureHeader = `sha256=${hmacDigest}`;\n\nreturn {\n  json: {\n    payload: canonicalPayload,\n    payloadString: payloadString,\n    signatureHeader: signatureHeader,\n    timestampHeader: nowEpoch\n  }\n};"
+      },
+      "id": "node-normalize-and-sign",
+      "name": "Normalize & Sign Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BOOKING_AGENT_URL || 'http://localhost:8000' }}/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Signature",
+              "value": "={{ $json.signatureHeader }}"
+            },
+            {
+              "name": "X-Timestamp",
+              "value": "={{ $json.timestampHeader }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.payloadString }}",
+        "options": {
+          "timeout": 25000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "node-http-booking-agent",
+      "name": "POST /v1/messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.statusCode }}",
+                    "rightValue": 200,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "200_OK"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.statusCode }}",
+                    "rightValue": 202,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "202_Accepted"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.statusCode }}",
+                    "rightValue": 429,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "429_RateLimited"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "node-switch-status",
+      "name": "Switch by HTTP Status",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1160,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v19.0/me/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + ($env.WHATSAPP_API_TOKEN || 'dummy_token') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  messaging_product: 'whatsapp',\n  recipient_type: 'individual',\n  to: $('Normalize & Sign Payload').item.json.payload.phone.replace('+', ''),\n  type: 'text',\n  text: { preview_url: false, body: $json.body.response_text }\n}) }}",
+        "options": {}
+      },
+      "id": "node-send-whatsapp-success",
+      "name": "Send WhatsApp Reply (200 OK)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1460,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v19.0/me/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + ($env.WHATSAPP_API_TOKEN || 'dummy_token') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  messaging_product: 'whatsapp',\n  recipient_type: 'individual',\n  to: $('Normalize & Sign Payload').item.json.payload.phone.replace('+', ''),\n  type: 'text',\n  text: { preview_url: false, body: 'Você enviou mensagens em sequência rápida. Por favor, aguarde um instante antes de enviar uma nova mensagem.' }\n}) }}",
+        "options": {}
+      },
+      "id": "node-send-whatsapp-rate-limit",
+      "name": "Send 429 Cooldown Notice (No Retry)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1460,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v19.0/me/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + ($env.WHATSAPP_API_TOKEN || 'dummy_token') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  messaging_product: 'whatsapp',\n  recipient_type: 'individual',\n  to: $('Normalize & Sign Payload').item.json.payload.phone.replace('+', ''),\n  type: 'text',\n  text: { preview_url: false, body: 'Desculpe, nosso sistema de agendamento está passando por uma breve instabilidade. Por favor, tente novamente em alguns instantes.' }\n}) }}",
+        "options": {}
+      },
+      "id": "node-send-whatsapp-fallback-error",
+      "name": "Send 503 Fallback Error Notice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1460,
+        480
+      ]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Filter Incoming Text Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Incoming Text Messages": {
+      "main": [
+        [
+          {
+            "node": "Normalize & Sign Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize & Sign Payload": {
+      "main": [
+        [
+          {
+            "node": "POST /v1/messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST /v1/messages": {
+      "main": [
+        [
+          {
+            "node": "Switch by HTTP Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch by HTTP Status": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reply (200 OK)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [],
+        [
+          {
+            "node": "Send 429 Cooldown Notice (No Retry)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send 503 Fallback Error Notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "whatsapp-booking-agent-v1",
+  "tags": []
+}
