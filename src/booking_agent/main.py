@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI
 from openai import AsyncOpenAI
 
+from booking_agent.api.middleware import BodySizeLimitMiddleware, RequestIdMiddleware
 from booking_agent.api.routers import health
 from booking_agent.config import Settings, get_settings
 from booking_agent.database.engine import build_engine
@@ -73,5 +74,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title=app_settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.settings = app_settings
+
+    # Body size limit runs after RequestIdMiddleware has assigned a correlation ID.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_body_bytes=app_settings.max_body_bytes,
+    )
+    app.add_middleware(RequestIdMiddleware)
+
     app.include_router(health.router)
     return app
