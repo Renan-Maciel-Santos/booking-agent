@@ -3,8 +3,8 @@
 | Field   | Value                         |
 |---------|-------------------------------|
 | Author  | Renan Maciel                  |
-| Status  | Draft (Conversation flow design) |
-| Updated | 2026-10-20                        |
+| Status  | Draft (Message endpoint and channel integration design) |
+| Updated | 2026-10-21                        |
 
 ## 1. Context
 
@@ -1219,7 +1219,299 @@ In accordance with [ADR 0001](adr/0001-llm-only-at-the-edge.md), the LLM never g
 | `SESSION_EXPIRED` | TTL expiration restart | none | *"Olá! Sua sessão anterior expirou por inatividade. Como posso ajudar você hoje? (Agendar, remarcar ou cancelar)"* |
 | `REQUEST_PROCESSING` | Concurrent request during execution | none | *"Seu pedido está sendo processado, por favor aguarde um instante."* |
 
-## 9. Alternatives considered
+## 9. Message Endpoint and Channel Integration
+
+The conversational engine is exposed to external messaging networks via a secure, authenticated HTTP webhook endpoint. The application remains strictly channel-agnostic: vendor-specific formatting, media filtering, and delivery handshakes are delegated to an external orchestrator (**n8n**), which functions as a channel adapter adhering to the Ports and Adapters architecture.
+
+```mermaid
+flowchart LR
+    subgraph Channel["External Messaging Channel"]
+        User["Customer (WhatsApp)"] <--> WA["WhatsApp Cloud API / Provider"]
+    end
+
+    subgraph Adapter["Channel Adapter (n8n)"]
+        WA -->|Webhook JSON| N8N[n8n Workflow]
+        N8N -->|1. Filter & Normalize| Norm[Canonical Payload]
+        Norm -->|2. Sign with HMAC-SHA256| Sign[Add X-Signature & X-Timestamp]
+        N8N -->|5. Outbound Message| WA
+    end
+
+    subgraph Backend["Booking Agent (FastAPI)"]
+        Sign -->|POST /v1/messages| Auth[HMAC & Timestamp Auth]
+        Auth -->|3. Validated Payload| Conv[ConversationService]
+        Conv -->|4. Response Text 200 OK| N8N
+        Conv -.->|503 Retryable Error| N8N
+        N8N -.->|Exponential Backoff Retry| Sign
+    end
+```
+
+### 9.1 Endpoint Contract: `POST /v1/messages`
+
+The API exposes a single, strongly-typed endpoint for processing incoming user turns:
+
+- **Path:** `POST /v1/messages`
+- **Content-Type:** `application/json`
+
+#### Request Headers:
+| Header | Required | Format / Description |
+|---|---|---|
+| `X-Signature` | Yes | Hex-encoded HMAC-SHA256 digest prefixed with algorithm: `sha256=<hex_digest>` |
+| `X-Timestamp` | Yes | Integer epoch seconds (UTC) of request dispatch: `<unix_timestamp>` (e.g. `1792584000`) |
+| `X-Request-ID` | No | Optional incoming UUID for request tracing. If omitted or malformed, the server generates a fresh UUID v4 |
+
+#### Request Body Schema (`IncomingMessageRequest`):
+```json
+{
+  "message_id": "msg_01JBCDEFGHJKMNPQRSTVWXYZ01",
+  "phone": "+5511999998888",
+  "text": "Quero agendar um corte de cabelo amanhã às 15h",
+  "timestamp": "2026-10-21T12:00:00Z"
+}
+```
+
+- **Validation Rules (Pydantic `extra="forbid"`):**
+  - `message_id`: Non-empty string, length 1–128 characters, printable characters conforming to `^[a-zA-Z0-9_\-\.:]{1,128}$`.
+  - `phone`: String in strict international E.164 format matching `^\+[1-9]\d{1,14}$` (aligned with the PostgreSQL check constraint).
+  - `text`: String with stripped length between 1 and 1,000 characters. Blank or whitespace-only messages are rejected.
+  - `timestamp`: Timezone-aware datetime (`AwareDatetime`) representing the origin timestamp of the message as reported by the messaging channel (e.g. WhatsApp message timestamp, NOT server or n8n local time).
+
+#### Response Body Schema (`MessageResponse`):
+```json
+{
+  "response_text": "Para quem é o agendamento? Por favor, informe seu nome completo."
+}
+```
+Field `response_text` is `str | None`.
+
+#### HTTP Status Codes and Semantics:
+| Status | Meaning | Scenario / Trigger | Response Body |
+|---|---|---|---|
+| `200 OK` | Success | Normal turn completion; or idempotent replay of a previously completed message (`status == 'done'`); or conversational clarification (`CLARIFICATION_PROMPT`) | `{"response_text": "..."}` |
+| `202 Accepted` | In Progress | Deduplicated replay of a message whose turn is currently being processed (`status == 'processing'` within its active lease). The channel adapter drops this response and sends nothing to the user | `{"response_text": null}` |
+| `400 Bad Request` | Validation Error | Malformed JSON; schema violations; unknown extra fields; phone not in E.164; text empty or >1,000 chars; invalid timestamp format | `{"detail": "..."}` |
+| `401 Unauthorized` | Auth / Signature Failure | Missing `X-Signature` or `X-Timestamp`; timestamp drifted outside tolerance window (> 300s); HMAC signature mismatch | `{"detail": "Invalid signature or timestamp"}` |
+| `413 Payload Too Large` | Body Exceeded Limit | Request body exceeds configured `max_body_bytes` (64 KB). Terminated strictly with 413 | `{"detail": "Payload exceeds maximum allowed size"}` |
+| `429 Too Many Requests` | Rate Limited | Sender phone exceeded the rate limit threshold (> 10 requests / minute). Channel adapter does not retry; sends a polite cooldown notification to customer | `{"detail": "Too many requests. Please try again later."}` |
+| `503 Service Unavailable` | Transient Failure | Upstream LLM provider outage (`LLMUnavailableError`), unconfigured credentials (`LLMConfigurationError`), or transient database connection failure. Channel adapter retries with exponential backoff | `{"detail": "Service temporarily unavailable. Please retry later."}` |
+
+**Alignment with Failure Modes, Idempotency, and In-Progress Handling:**
+- **Failure Mode 3 (`LLMInvalidOutputError`):** Returns `200 OK` with `CLARIFICATION_PROMPT`. The turn completed deterministically by asking the user to rephrase; it is not an infrastructure failure and must not be retried.
+- **Failure Modes 1 & 2 (`LLMUnavailableError`, `LLMConfigurationError`):** Returns `503 Service Unavailable`. The `ConversationService` cleanup handler marks the lease as `failed` in `processed_messages` before re-raising. This signals to n8n to execute exponential backoff retries with the **same `message_id`**, which will be accepted and re-processed cleanly.
+- **Completed Message Replay (`status == 'done'`):** Re-submitting an already processed `message_id` immediately returns `200 OK` with the exact cached `response_text` from `processed_messages`. The channel adapter delivers this saved text to the customer, ensuring duplicate webhook deliveries never trigger duplicated actions.
+- **In-Progress Message Replay (`status == 'processing'`):** Re-submitting a `message_id` while its initial request is still executing within its active lease returns `202 Accepted` with `response_text: null`. The channel adapter drops the response without sending any text to the customer. This replaces sending `REQUEST_PROCESSING` text to the customer, avoiding message noise. (If the lease has expired, the worker resumes execution safely under the existing `action_id`).
+
+---
+
+### 9.2 Webhook Security: HMAC-SHA256 and Timestamp Tolerance Window
+
+Webhook endpoints exposed to the public internet must defend against payload tampering, credential theft, and replay attacks. We implement an HMAC-SHA256 signature verification scheme over the raw request payload:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Channel Adapter (n8n / Demo)
+    participant API as POST /v1/messages
+    participant Auth as WebhookAuth Dependency
+
+    Client->>Client: 1. Generate dispatch timestamp T (epoch seconds)
+    Client->>Client: 2. Construct payload: canonical = "${T}." + raw_body
+    Client->>Client: 3. Compute sig = HMAC_SHA256(secret, canonical).hexdigest()
+    Client->>API: 4. POST /v1/messages (Body: raw_body, Headers: X-Signature, X-Timestamp)
+    API->>Auth: 5. Verify request
+    Auth->>Auth: 6. Check presence of X-Signature and X-Timestamp (Missing -> 401)
+    Auth->>Auth: 7. Validate |now_utc - T| <= 300s (Drifted -> 401)
+    Auth->>Auth: 8. Recompute expected_sig = HMAC_SHA256(secret, "${T}." + raw_body)
+    Auth->>Auth: 9. hmac.compare_digest(expected_sig, provided_sig) (Mismatch -> 401)
+    Auth->>API: 10. Authentication Succeeded
+    API->>API: 11. Parse JSON and invoke ConversationService
+```
+
+#### Cryptographic Specification:
+1. **Shared Secret:** Loaded from environment via `config.Settings.webhook_secret` as `SecretStr`. It is strictly required (no default value); the application refuses to start if unconfigured.
+2. **Canonical Signature Payload:**
+   $$\text{CanonicalBytes} = \text{utf8}(\text{timestamp}) \mathbin{\Vert} \text{b"."} \mathbin{\Vert} \text{raw\_body\_bytes}$$
+   Concatenating the dispatch timestamp directly into the HMAC input cryptographically binds the timestamp to the body: an attacker cannot alter the timestamp without invalidating the signature.
+3. **Signature Format:** `X-Signature: sha256=<hex_digest>`.
+4. **Tolerance Window:** The request dispatch timestamp is verified against current server UTC time:
+   $$\lvert \text{now\_utc} - \text{timestamp} \rvert \le 300 \text{ seconds (5 minutes)}$$
+   Requests older than 5 minutes or more than 5 minutes in the future are rejected with `401 Unauthorized`.
+5. **Constant-Time Comparison:** Verification uses Python's `hmac.compare_digest(expected_hex, provided_hex)` to prevent timing side-channel attacks.
+
+#### Why HMAC-SHA256 over a simple static API Key?
+1. **Payload Integrity Guarantee:** A static API key (e.g. `Authorization: Bearer <token>`) only authenticates the header. It provides no protection if an intermediary, compromised reverse proxy, or network actor modifies, injects, or truncates the JSON body in transit. HMAC verifies that every byte of the payload originated from the trusted adapter without alteration.
+2. **Replay Attack Elimination:** If an HTTP request with a static API key is intercepted or captured in access logs, an attacker can replay that exact request indefinitely to trigger bookings or harass the business. The timestamp coupled with a 5-minute tolerance window ensures that intercepted requests automatically become invalid after 300 seconds.
+3. **No Secret Transmission:** The shared secret itself is never transmitted over the wire; only the one-way cryptographic digest is sent.
+4. **Industry Standard for Event-Driven Webhooks:** Major platforms (Stripe, GitHub, Shopify, Slack) use HMAC with timestamps over raw request bodies as the standard pattern for webhook verification.
+
+---
+
+### 9.3 Request Limits, Timeouts, and Rate Limiting
+
+To safeguard the service against denial-of-service (DoS), memory exhaustion, and prompt flooding, strict boundaries are enforced at the HTTP gateway:
+
+#### 1. Payload Size Limits:
+- **Maximum Request Body:** 64 KB (`65,536 bytes`).
+  - Enforced via an ASGI middleware before buffering the body into memory.
+  - Payloads exceeding 64 KB are terminated strictly with `413 Payload Too Large`, preventing Slowloris attacks and heap memory exhaustion.
+- **Maximum Message Text Length:** 1,000 characters.
+  - Enforced in Pydantic schema validation (`min_length=1, max_length=1000`).
+  - Conversational WhatsApp messages rarely exceed 300 characters. Capping at 1,000 characters prevents prompt bloating, keeps OpenAI token consumption low, and mitigates long-text prompt injection stuffing.
+- **Maximum Message ID Length:** 128 characters (`^[a-zA-Z0-9_\-\.:]{1,128}$`).
+
+#### 2. Total Request Deadline and Timeouts:
+- **API Request Timeout:** Configured via `config.Settings.request_timeout_seconds` (e.g. `15` seconds; no test values as default). This deadline encompasses the LLM call (with internal client timeout of 10s and retries) plus short database transactions.
+- **Channel Adapter Timeout:** The HTTP timeout configured in the channel adapter (n8n HTTP Request node) **must be strictly greater** than the API deadline (e.g. set to `25` or `30` seconds). This prevents the channel adapter from prematurely aborting the TCP connection while the API is completing an action or cleanly marking a lease as failed.
+
+#### 3. Rate Limiting Strategy:
+- **Decision:** Rate limiting by customer phone number is implemented as an **in-memory sliding window** (e.g. **10 requests per minute** per phone number).
+- **Behavior:** If a phone number sends more than 10 requests within a rolling 60-second window, the endpoint immediately responds with `429 Too Many Requests` (`{"detail": "Too many requests. Please try again later."}`).
+- **Channel Action on 429:** The channel adapter (n8n) **must not retry** when receiving 429. It dispatches at most one polite cooldown message asking the user to wait (*"Você enviou mensagens em sequência rápida. Por favor, aguarde um instante antes de enviar uma nova mensagem."*).
+- **Justification:**
+  - WhatsApp numbers are public interfaces. A rogue script or looping webhook could consume hundreds of LLM calls in seconds, driving up API bills and locking database rows.
+  - In a single-instance deployment, an in-memory sliding window provides sub-millisecond evaluation with zero external infrastructure overhead (no Redis required).
+- **Known Limitation & Multi-Instance Roadmap:**
+  - *Current single-node scope:* In-memory state is local to the Python process.
+  - *Multi-instance scaling:* If the application scales to multiple replicas behind a load balancer, independent in-memory counters allow $N \times \text{limit}$ requests across $N$ workers. A distributed cache (Redis or PostgreSQL unlogged table) would be required for strict global rate limits. This is documented as an acceptable trade-off and a conscious technical debt for the current stage.
+
+---
+
+### 9.4 Observability, Request Tracing, and Privacy
+
+The message endpoint integrates observability standards defined in the `observability` skill, ensuring complete request traceability and performance transparency without leaking PII:
+
+```mermaid
+flowchart TD
+    Req[Incoming HTTP Request] --> MW[RequestID Middleware]
+    MW -->|Assign or Propagate UUID| Ctx[Bind to request_id_ctx ContextVar]
+    Ctx --> Log1[JSON Log: Request Started]
+    Log1 --> Service[ConversationService Orchestration]
+    Service -->|Measure Phase 1| P1[Idempotency Lease Duration]
+    Service -->|Measure Phase 2| P2[LLM Extraction Duration]
+    Service -->|Measure Phase 3| P3[State Lock Duration]
+    Service -->|Measure Phase 4| P4[Action Execution Duration]
+    P1 & P2 & P3 & P4 --> Log2[JSON Log: Message Processed<br/>durations, outcome, masked phone, text_len]
+    Log2 --> Resp[HTTP Response + X-Request-ID Header]
+```
+
+#### 1. Request Correlation (`X-Request-ID`):
+- Middleware checks for an incoming `X-Request-ID` header. If valid UUID/string, it is preserved; otherwise, a fresh UUID v4 is generated.
+- The `request_id` is set in a `contextvars.ContextVar` accessible across all asynchronous tasks.
+- The custom JSON logger (`logging_config.py`) injects `"request_id": "<uuid>"` into every log entry emitted during the request.
+- The response returns `X-Request-ID: <uuid>` in the HTTP headers.
+
+#### 2. PII and Message Masking:
+- **Phone Numbers:** Masked in all logs as `+5511*****8888` (first 5 chars + 5 asterisks + last 4 chars). Raw phone numbers never appear in logs.
+- **Message Content:** Customer message text is **strictly forbidden from being logged at any log level** (DEBUG, INFO, WARNING, ERROR). Only message character length (`text_len: int`) and message ID are logged.
+- **Customer Names:** Masked or omitted in log events.
+
+#### 3. Per-Phase Latency Tracking:
+The log record for each processed turn includes granular duration metrics (in milliseconds):
+- `phase1_lease_ms`: Duration of the short transaction acquiring the idempotency lease.
+- `phase2_llm_ms`: Duration of the external LLM extraction call (0 ms if fast-path bypassed the LLM).
+- `phase3_state_ms`: Duration of state retrieval and lock acquisition under `SELECT ... FOR UPDATE`.
+- `phase4_action_ms`: Duration of transactional execution in `BookingService`.
+- `total_duration_ms`: Total request elapsed time.
+
+#### 4. Structured Outcome Telemetry:
+Every completed request emits a structured event:
+```json
+{
+  "timestamp": "2026-10-21T12:00:01.420Z",
+  "level": "INFO",
+  "logger": "booking_agent.api.routers.messages",
+  "message": "Message processed successfully",
+  "request_id": "8f7e2a1b-3c4d-5e6f-7a8b-9c0d1e2f3a4b",
+  "phone_masked": "+5511*****8888",
+  "message_id": "msg_01JBCDEFGHJKMNPQRSTVWXYZ01",
+  "text_len": 48,
+  "outcome": "booking_confirmed",
+  "fast_path": true,
+  "stage_from": "AWAITING_CONFIRMATION",
+  "stage_to": "IDLE",
+  "phase1_lease_ms": 4.2,
+  "phase2_llm_ms": 0.0,
+  "phase3_state_ms": 6.8,
+  "phase4_action_ms": 14.1,
+  "total_duration_ms": 25.1
+}
+```
+Standardized `outcome` values:
+- `booking_confirmed`: New appointment created.
+- `reschedule_confirmed`: Appointment rescheduled.
+- `cancel_confirmed`: Appointment cancelled.
+- `slot_conflict`: Requested slot was taken; alternatives offered.
+- `llm_clarification`: Ambiguous turn; clarification requested.
+- `idempotent_replay`: Re-delivered `message_id` served from cache (200 OK).
+- `duplicate_in_progress`: Re-delivered `message_id` still processing within lease (202 Accepted).
+- `llm_unavailable`: Upstream LLM failed (503).
+- `rate_limited`: Throttled by rate limiter (429).
+
+---
+
+### 9.5 Channel Integration via n8n Adapter
+
+In production, customers interact with Northside Barbers through WhatsApp. However, WhatsApp APIs (Meta Cloud API, Evolution API, Z-API) require complex webhook verification handshakes, deliver non-standard JSON envelopes with nested arrays, and send noise events (status receipts, read markers, reaction emojis).
+
+#### The Role of n8n as Channel Adapter:
+Rather than polluting the Python backend with WhatsApp-specific parsing libraries or webhook verification logic, **n8n** acts as an external channel adapter:
+
+1. **Webhook Endpoint:** n8n exposes a public webhook URL to WhatsApp.
+2. **Filtering:** Ignores delivery statuses (`sent`, `delivered`, `read`), media messages (audio, images, stickers), and group messages.
+3. **Canonical Normalization:** Extracts sender phone, text body, message ID, and original WhatsApp timestamp:
+   ```json
+   {
+     "message_id": "={{ $json.body.entry[0].changes[0].value.messages[0].id }}",
+     "phone": "={{ '+' + $json.body.entry[0].changes[0].value.messages[0].from }}",
+     "text": "={{ $json.body.entry[0].changes[0].value.messages[0].text.body }}",
+     "timestamp": "={{ new Date(Number($json.body.entry[0].changes[0].value.messages[0].timestamp) * 1000).toISOString() }}"
+   }
+   ```
+   *Note:* The body `timestamp` comes directly from WhatsApp's message epoch timestamp, not `new Date()`.
+4. **HMAC Signing:** Uses a Crypto / Code node in n8n with `WEBHOOK_SECRET` to compute `X-Signature` (`sha256=<digest>`) and sets `X-Timestamp` to current dispatch epoch seconds (`Math.floor(Date.now() / 1000)`).
+5. **API Invocation:** Sends `POST /v1/messages` to the booking agent with an HTTP timeout set to 25s (strictly greater than the API's internal deadline of 15s).
+6. **Reply Handling & Dispatch:**
+   - If HTTP status is `200 OK` and `response_text` is non-empty, dispatches the message to WhatsApp.
+   - If HTTP status is `202 Accepted` (or `response_text` is null), drops the response and sends nothing to WhatsApp.
+7. **Failure Protocols:**
+   - **On `429 Too Many Requests`:** Do **not** retry. Optionally send a polite notice asking the user to wait a moment.
+   - **On `503 Service Unavailable`:** Automatically retry using exponential backoff:
+     - Attempt 1: Wait 1s
+     - Attempt 2: Wait 3s
+     - Attempt 3: Wait 9s
+     All retries keep the **same `message_id`**.
+   - If all retries fail, sends a fallback message to the customer: *"Desculpe, nosso sistema de agendamento está passando por uma breve instabilidade. Por favor, tente novamente em alguns instantes."*
+
+#### Exported Workflow:
+The repository versions the complete, tested n8n workflow at `integrations/n8n/whatsapp_booking_agent_workflow.json` ready for one-click import.
+
+---
+
+### 9.6 WhatsApp-Free Demonstration Script (`scripts/demo_conversation.py`)
+
+To enable local developer evaluation, automated CI smoke testing, Quick Start documentation validation, and terminal GIF recording without requiring a live WhatsApp Business account, the repository includes a standalone CLI demonstration tool:
+
+- **Path:** `scripts/demo_conversation.py`
+- **Execution:** `uv run python scripts/demo_conversation.py` (against a running server with `LLM_PROVIDER=fake`).
+
+#### Script Flow:
+The script executes a realistic, 7-turn customer conversation against `POST /v1/messages`:
+1. **Turn 1 (New Booking):** Customer asks to book haircut tomorrow at 15:00. Bot replies asking for customer name (`ASK_CUSTOMER_NAME`).
+2. **Turn 2 (Provide Name):** Customer replies "Renan Maciel". Bot recognizes name and presents summary confirmation (`CONFIRM_BOOKING`).
+3. **Turn 3 (Confirmation):** Customer confirms "Sim". Bot books appointment and returns confirmation (`BOOKING_SUCCESS`).
+4. **Turn 4 (Reschedule Request):** Customer asks to reschedule to Friday at 16:00. Bot presents reschedule confirmation (`CONFIRM_RESCHEDULE`).
+5. **Turn 5 (Confirm Reschedule):** Customer replies "Confirmado". Bot reschedules appointment (`RESCHEDULE_SUCCESS`).
+6. **Turn 6 (Cancellation Request):** Customer asks to cancel. Bot asks for confirmation (`CONFIRM_CANCEL`).
+7. **Turn 7 (Confirm Cancellation):** Customer replies "Sim, cancela". Bot cancels appointment (`CANCEL_SUCCESS`).
+
+#### Capabilities:
+- Automatically reads `WEBHOOK_SECRET` from environment or `.env` and computes valid HMAC-SHA256 signatures for every turn.
+- Renders formatted terminal boxes with distinct colors for user messages (blue), bot responses (green), request latencies (yellow), and HTTP status codes.
+- Simulates realistic human typing delays (configurable via `--delay`).
+- Supports an `--idempotency-check` flag verifying that repeating Turn 1 immediately returns the cached reply without duplicate processing.
+
+---
+
+## 10. Alternatives considered
 
 **LLM with free tool calling deciding everything.** The model would receive tools
 like `check_availability` and `create_appointment` and decide the sequence.
@@ -1270,10 +1562,18 @@ asynchronous tasks. Using an injected `Clock` protocol ensures strict test isola
 
 **Heuristic idempotency based on (phone, service, starts_at).** Rejected: Phone numbers can be shared across multiple customers; rapid consecutive "sim" messages with different message IDs can trigger concurrent turns; and in "any barber" mode, two separate appointments could be scheduled for the same slot with different barbers because the exclusion constraint only guards per barber. Exact database-enforced idempotency via `booking_actions (action_id PK)` written inside the action transaction guarantees at-most-once execution for the analyzed and tested failure modes (concurrent confirmations, duplicate deliveries, worker crashes, and delayed replays of older reschedules). See [ADR 0005](adr/0005-conversation-flow-and-state-machine.md).
 
-## 10. Risks and mitigations
+**Static API key authentication for webhooks.** Rejected: static API keys (e.g. `Authorization: Bearer <key>`) only authenticate the header and do not guarantee payload integrity. An adversary modifying the body in transit cannot be detected, and an intercepted request can be replayed indefinitely. HMAC-SHA256 with timestamp tolerance guarantees cryptographic payload integrity and blocks replay attacks. See [ADR 0006](adr/0006-message-endpoint-and-channel-integration.md).
+
+**Distributed rate limiting with Redis.** Rejected for initial release: adds an external infrastructure dependency, deployment complexity, and failure modes to a single-tenant barbershop deployment. Single-node in-memory rate limiting shields the system from flooding with zero operational cost, with distributed rate limiting documented as a known scaling limitation. See [ADR 0006](adr/0006-message-endpoint-and-channel-integration.md).
+
+**Embedding WhatsApp Cloud API client directly in FastAPI.** Rejected: couples the core domain to a specific proprietary vendor SDK, complicates local testing, and forces the Python application to handle media downloads, verification challenges, and receipt noise. Using n8n as an external adapter preserves hexagonal architecture boundaries and allows swapping WhatsApp providers without touching backend code. See [ADR 0006](adr/0006-message-endpoint-and-channel-integration.md).
+
+---
+
+## 11. Risks and mitigations
 
 | Risk                         | Mitigation                                                                  |
-|------------------------------|-----------------------------------------------------------------------------|
+|---|---|
 | Hallucinated entities        | Strict Pydantic schema; service validates against real catalog and slots    |
 | Double booking (concurrency) | DB exclusion constraint + transactions; conflict mapped to a friendly reply |
 | Token cost                   | Single short extraction call; small model; no tool loops; usage logged      |
@@ -1287,9 +1587,17 @@ asynchronous tasks. Using an injected `Clock` protocol ensures strict test isola
 | Crash mid-turn               | Atomic idempotency leases in `processed_messages`, exact `action_id PK` on `booking_actions`, and `response_text` replay on deduplication |
 | Colloquial service/barber names | Normalization, alias dictionary, fuzzy matching, and catalog listing fallback |
 | Fast-path false positives    | Fast path strictly matches exact, unambiguous affirmative/negative tokens   |
-| PII in message logs / replay | `processed_messages.response_text` contains PII; requires periodic retention cleanup |
+| PII in message logs / replay | Phone numbers masked (`+5511*****8888`), message text never logged at any level (only `text_len`), periodic purge for `processed_messages.response_text` (Issue #9) |
+| Webhook replay attack        | HMAC-SHA256 over raw body + `X-Timestamp` with 300s expiration window       |
+| Webhook payload tampering    | Constant-time HMAC comparison prevents in-transit payload modification      |
+| Slowloris / Memory exhaustion| Enforced 64 KB raw payload limit (HTTP 413) and 1,000 char message text bound|
+| Webhook spam / LLM wallet drain | In-memory sliding window rate limiting (10 req/min per phone) returning 429 |
+| Multi-instance rate limit leak | Documented as known limitation; distributed Redis rate limiter ready for multi-node deployments |
+| Out-of-order rapid messages  | Known limitation: rapid messages from the same phone may be processed out of order because LLM extraction happens before database locking |
 
-## 11. Milestones
+---
+
+## 12. Milestones
 
 1. **Scaffold**: layout, tooling, CI, health checks, `IntentParser` port. (Completed)
 2. **Schema and repositories**: migrations for the draft model, repositories with
@@ -1297,5 +1605,5 @@ asynchronous tasks. Using an injected `Clock` protocol ensures strict test isola
 3. **BookingService**: availability, booking, rescheduling and cancellation rules;
    time handling and deterministic Clock. (Completed)
 4. **LLM adapter**: structured-output adapter with contract tests, fake provider, and evaluation suite. (Completed)
-5. **Conversation flow**: `conversation_state` state machine and message endpoint. (In Progress - Design Complete)
-6. **Observability and hardening**: request IDs, metrics, rate limiting, auth.
+5. **Conversation flow**: `conversation_state` state machine, turn orchestration, and action idempotency. (Completed)
+6. **Message endpoint and channel integration**: `POST /v1/messages`, HMAC auth, rate limiting, n8n adapter workflow, demo script, observability. (In Progress - Design Complete)
