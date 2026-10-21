@@ -72,6 +72,8 @@ _AFFIRMATIVE_TOKENS: set[str] = {
     "ok",
     "confirmo",
     "confirmar",
+    "confirmado",
+    "confirmada",
     "pode confirmar",
     "fechado",
     "beleza",
@@ -83,10 +85,15 @@ _NEGATIVE_TOKENS: set[str] = {
     "nao",
     "não",
     "n",
-    "cancela",
-    "cancelar",
     "deixa",
     "esquece",
+}
+
+_CANCEL_FLOW_TOKENS: set[str] = {
+    "cancela",
+    "cancelar",
+    "pode cancelar",
+    "sim pode cancelar",
 }
 
 _CUSTOMER_NAME_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ '-]{2,60}$")
@@ -173,6 +180,7 @@ def is_valid_customer_name(name: str) -> bool:
     if (
         normalized in _AFFIRMATIVE_TOKENS
         or normalized in _NEGATIVE_TOKENS
+        or normalized in _CANCEL_FLOW_TOKENS
         or normalized in _KNOWN_COMMANDS
     ):
         return False
@@ -312,12 +320,14 @@ class ConversationService:
         # Phase 2: Candidate Fast-Path Pre-Evaluation & LLM Extraction
         # (Zero DB Connections or locks Held)
         # -------------------------------------------------------------
-        fast_path_candidate: Literal["affirmative", "negative"] | None = None
+        fast_path_candidate: Literal["affirmative", "negative", "cancel_action"] | None = None
         normalized_msg = normalize_text(text)
         if normalized_msg in _AFFIRMATIVE_TOKENS:
             fast_path_candidate = "affirmative"
         elif normalized_msg in _NEGATIVE_TOKENS:
             fast_path_candidate = "negative"
+        elif normalized_msg in _CANCEL_FLOW_TOKENS:
+            fast_path_candidate = "cancel_action"
 
         intent: BookingIntent | None = None
         phase2_llm_ms = 0.0
@@ -423,12 +433,26 @@ class ConversationService:
             # Fast-path revalidation under lock
             if fast_path_candidate is not None:
                 if stage == ConversationStage.AWAITING_CONFIRMATION.value and "action_id" in slots:
+                    pending_flow = slots.get("flow", "book")
+
+                    # Disambiguate context-dependent confirmation:
+                    # When confirming a cancellation flow, "pode cancelar" / "cancela" means
+                    # YES (affirmative: confirm the cancellation).
+                    # When confirming a booking or rescheduling flow, it means NO (negative:
+                    # abort / cancel the requested booking or reschedule).
                     if fast_path_candidate == "affirmative":
+                        is_affirmative = True
+                    elif fast_path_candidate == "negative":
+                        is_affirmative = False
+                    else:  # "cancel_action"
+                        is_affirmative = pending_flow == "cancel"
+
+                    if is_affirmative:
                         stage = ConversationStage.EXECUTING.value
                         slots["executing_message_id"] = message_id
                         await uow.conversation_states.upsert(phone, stage, slots)
                         # Lock released upon exiting block; advances to Phase 4
-                    else:  # negative
+                    else:
                         stage = ConversationStage.IDLE.value
                         slots = {}
                         await uow.conversation_states.upsert(phone, stage, slots)
@@ -869,11 +893,21 @@ class ConversationService:
 
         # 3. State: AWAITING_CONFIRMATION (User replied with non-exact tokens)
         if stage == ConversationStage.AWAITING_CONFIRMATION.value:
-            if normalized_msg in _NEGATIVE_TOKENS:
+            pending_flow = slots.get("flow", "book")
+            if normalized_msg in _NEGATIVE_TOKENS or (
+                normalized_msg in _CANCEL_FLOW_TOKENS and pending_flow != "cancel"
+            ):
                 return (
                     ConversationStage.IDLE.value,
                     {},
                     render_template(TemplateKey.FLOW_CANCELLED),
+                )
+            if normalized_msg in _CANCEL_FLOW_TOKENS and pending_flow == "cancel":
+                slots["executing_message_id"] = ""
+                return (
+                    ConversationStage.EXECUTING.value,
+                    slots,
+                    "",
                 )
             if intent:
                 has_updates = False

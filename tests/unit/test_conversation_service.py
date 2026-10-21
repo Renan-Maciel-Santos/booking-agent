@@ -497,3 +497,134 @@ async def test_unexpected_exception_marks_message_as_failed_and_reraises() -> No
         msg = await uow.processed_messages.get(msg_id)
         assert msg is not None
         assert msg.status == "failed"
+
+
+@pytest.mark.unit
+async def test_pode_cancelar_during_booking_confirmation_aborts_without_booking() -> None:
+    """When customer says 'pode cancelar' during new booking, abort without booking."""
+    conv_service, uow_factory, _, _, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999991199"
+    action_id = uuid.uuid4()
+
+    async with uow_factory() as uow:
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.AWAITING_CONFIRMATION.value,
+            slots={
+                "flow": "book",
+                "service_id": str(svc_id),
+                "service_name": "Corte de Cabelo",
+                "barber_id": str(barber_id),
+                "local_date": "2026-11-21",
+                "local_time": "15:00:00",
+                "customer_name": "Cliente Teste",
+                "action_id": str(action_id),
+            },
+        )
+
+    resp = await conv_service.handle_message(
+        message_id="msg_pode_cancelar_booking",
+        phone=phone,
+        text="pode cancelar",
+    )
+
+    # Must abort request (negative outcome), NOT book
+    assert "solicitação foi cancelada" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.IDLE.value
+        assert st.slots == {}
+
+        # No appointment must exist
+        cust = await uow.customers.get_by_phone(phone)
+        if cust is not None:
+            appts = await uow.appointments.list_by_customer(cust.id)
+            assert len(appts) == 0
+
+
+@pytest.mark.unit
+async def test_pode_cancelar_during_cancellation_confirmation_cancels_appointment() -> None:
+    """When customer says 'pode cancelar' during cancellation, cancel appointment."""
+    conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999991198"
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Cancelamento", phone=phone)
+        appt = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=clock.now() + timedelta(days=1),
+            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+
+    # 1. Turn 1: Ask to cancel
+    intent_parser._responses["quero cancelar"] = BookingIntent(intent=IntentType.CANCEL)
+    resp1 = await conv_service.handle_message(
+        message_id="msg_cancel_ask",
+        phone=phone,
+        text="quero cancelar",
+    )
+    assert "Deseja realmente cancelar seu agendamento" in resp1
+
+    # 2. Turn 2: Confirm cancellation using 'pode cancelar'
+    resp2 = await conv_service.handle_message(
+        message_id="msg_cancel_confirm",
+        phone=phone,
+        text="pode cancelar",
+    )
+    assert "foi cancelado com sucesso" in resp2
+
+    async with uow_factory() as uow:
+        appt_after = await uow.appointments.get_by_id(appt.id)
+        assert appt_after is not None
+        assert appt_after.status == AppointmentStatus.CANCELLED.value
+
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.IDLE.value
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("affirmative_token", ["confirmado", "confirmada"])
+async def test_confirmado_and_confirmada_remain_affirmative_for_booking(
+    affirmative_token: str,
+) -> None:
+    """'confirmado' and 'confirmada' remain valid affirmative tokens that confirm a booking."""
+    conv_service, uow_factory, _, _, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = f"+5511999991{abs(hash(affirmative_token)) % 10000:04d}"
+    action_id = uuid.uuid4()
+
+    async with uow_factory() as uow:
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.AWAITING_CONFIRMATION.value,
+            slots={
+                "flow": "book",
+                "service_id": str(svc_id),
+                "service_name": "Corte de Cabelo",
+                "barber_id": str(barber_id),
+                "local_date": "2026-11-21",
+                "local_time": "15:00:00",
+                "customer_name": "Cliente Confirmado",
+                "action_id": str(action_id),
+            },
+        )
+
+    resp = await conv_service.handle_message(
+        message_id=f"msg_confirm_{affirmative_token}",
+        phone=phone,
+        text=affirmative_token,
+    )
+    assert "está confirmado" in resp
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.get_by_phone(phone)
+        assert cust is not None
+        appts = await uow.appointments.list_by_customer(cust.id)
+        assert len(appts) == 1
+        assert appts[0].status == AppointmentStatus.CONFIRMED.value
