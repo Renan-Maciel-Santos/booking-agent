@@ -199,7 +199,7 @@ class BookingAction(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)
     appointment_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("appointments.id", ondelete="CASCADE"),
+        ForeignKey("appointments.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
