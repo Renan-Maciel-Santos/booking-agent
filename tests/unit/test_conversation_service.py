@@ -9,13 +9,20 @@ import pytest
 
 from booking_agent.config import Settings
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
-from booking_agent.domain.enums import AppointmentStatus, ConversationFlow, ConversationStage
+from booking_agent.domain.enums import (
+    AppointmentStatus,
+    ConfirmationCandidate,
+    ConversationFlow,
+    ConversationStage,
+)
 from booking_agent.domain.errors import LLMInvalidOutputError
 from booking_agent.integrations.llm.fake_intent_parser import FakeIntentParser
 from booking_agent.services.booking_service import BookingService
 from booking_agent.services.conversation_service import (
     ConversationService,
+    classify_fast_path_candidate,
     is_valid_customer_name,
+    resolve_confirmation,
 )
 from booking_agent.services.entity_resolver import EntityResolver
 from booking_agent.services.templates import TemplateKey, render_template
@@ -984,3 +991,48 @@ async def test_awaiting_confirmation_missing_flow_fails_safe_and_logs_error(
     assert len(error_logs) >= 1
     assert getattr(error_logs[0], "conversation_id", None) == phone
     assert getattr(error_logs[0], "stage", None) == ConversationStage.AWAITING_CONFIRMATION.value
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("candidate", "flow", "expected"),
+    [
+        (ConfirmationCandidate.AFFIRMATIVE, ConversationFlow.BOOK, True),
+        (ConfirmationCandidate.AFFIRMATIVE, ConversationFlow.RESCHEDULE, True),
+        (ConfirmationCandidate.AFFIRMATIVE, ConversationFlow.CANCEL, True),
+        (ConfirmationCandidate.NEGATIVE, ConversationFlow.BOOK, False),
+        (ConfirmationCandidate.NEGATIVE, ConversationFlow.RESCHEDULE, False),
+        (ConfirmationCandidate.NEGATIVE, ConversationFlow.CANCEL, False),
+        (ConfirmationCandidate.CANCEL_ACTION, ConversationFlow.BOOK, False),
+        (ConfirmationCandidate.CANCEL_ACTION, ConversationFlow.RESCHEDULE, False),
+        (ConfirmationCandidate.CANCEL_ACTION, ConversationFlow.CANCEL, True),
+    ],
+)
+def test_resolve_confirmation_truth_table(
+    candidate: ConfirmationCandidate,
+    flow: ConversationFlow,
+    expected: bool,
+) -> None:
+    """Parametrized verification of all 9 combinations in the confirmation truth table."""
+    assert resolve_confirmation(candidate, flow) is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "ambiguous_phrase",
+    [
+        "não pode cancelar",
+        "nao pode cancelar",
+        "não cancela",
+        "cancela não",
+        "não, pode cancelar",
+        "pode cancelar sim",
+    ],
+)
+def test_ambiguous_cancellation_phrases_do_not_produce_fast_path_candidate(
+    ambiguous_phrase: str,
+) -> None:
+    """Phrases containing mixed or negated intent must not be classified
+    as fast-path candidates.
+    """
+    assert classify_fast_path_candidate(ambiguous_phrase) is None

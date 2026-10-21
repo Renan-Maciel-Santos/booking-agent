@@ -7,13 +7,14 @@ import uuid
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Any, Literal
+from typing import Any, assert_never
 from zoneinfo import ZoneInfo
 
 from booking_agent.config import Settings
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
 from booking_agent.domain.enums import (
     AppointmentStatus,
+    ConfirmationCandidate,
     ConversationFlow,
     ConversationStage,
     MessageStatus,
@@ -236,6 +237,39 @@ def _extract_alternative_index(text: str, alternatives: list[str]) -> int | None
     return None
 
 
+def classify_fast_path_candidate(text: str) -> ConfirmationCandidate | None:
+    """Classify user text into a confirmation candidate category, or None if non-exact."""
+    normalized_msg = normalize_text(text)
+    if normalized_msg in _AFFIRMATIVE_TOKENS:
+        return ConfirmationCandidate.AFFIRMATIVE
+    if normalized_msg in _NEGATIVE_TOKENS:
+        return ConfirmationCandidate.NEGATIVE
+    if normalized_msg in _CANCEL_FLOW_TOKENS:
+        return ConfirmationCandidate.CANCEL_ACTION
+    return None
+
+
+def resolve_confirmation(candidate: ConfirmationCandidate, flow: ConversationFlow) -> bool:
+    """Disambiguate confirmation candidate tokens based on the pending flow.
+
+    Args:
+        candidate: Fast-path confirmation candidate category.
+        flow: Currently active conversation flow.
+
+    Returns:
+        True if the action should proceed to execution, False if the action is cancelled.
+    """
+    match candidate:
+        case ConfirmationCandidate.AFFIRMATIVE:
+            return True
+        case ConfirmationCandidate.NEGATIVE:
+            return False
+        case ConfirmationCandidate.CANCEL_ACTION:
+            return flow == ConversationFlow.CANCEL
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 class ConversationService:
     """Multi-turn conversation orchestrator managing dialogue state and booking actions."""
 
@@ -366,14 +400,7 @@ class ConversationService:
         # Phase 2: Candidate Fast-Path Pre-Evaluation & LLM Extraction
         # (Zero DB Connections or locks Held)
         # -------------------------------------------------------------
-        fast_path_candidate: Literal["affirmative", "negative", "cancel_action"] | None = None
-        normalized_msg = normalize_text(text)
-        if normalized_msg in _AFFIRMATIVE_TOKENS:
-            fast_path_candidate = "affirmative"
-        elif normalized_msg in _NEGATIVE_TOKENS:
-            fast_path_candidate = "negative"
-        elif normalized_msg in _CANCEL_FLOW_TOKENS:
-            fast_path_candidate = "cancel_action"
+        fast_path_candidate = classify_fast_path_candidate(text)
 
         intent: BookingIntent | None = None
         phase2_llm_ms = 0.0
@@ -501,17 +528,7 @@ class ConversationService:
                             total_duration_ms=total_ms,
                         )
 
-                    # Disambiguate context-dependent confirmation:
-                    # When confirming a cancellation flow, "pode cancelar" / "cancela" means
-                    # YES (affirmative: confirm the cancellation).
-                    # When confirming a booking or rescheduling flow, it means NO (negative:
-                    # abort / cancel the requested booking or reschedule).
-                    if fast_path_candidate == "affirmative":
-                        is_affirmative = True
-                    elif fast_path_candidate == "negative":
-                        is_affirmative = False
-                    else:  # "cancel_action"
-                        is_affirmative = validated_flow == ConversationFlow.CANCEL
+                    is_affirmative = resolve_confirmation(fast_path_candidate, validated_flow)
 
                     if is_affirmative:
                         stage = ConversationStage.EXECUTING.value
@@ -998,20 +1015,20 @@ class ConversationService:
                     render_template(TemplateKey.GREETING_HELP),
                 )
             slots["flow"] = pending_flow.value
-            if normalized_msg in _NEGATIVE_TOKENS or (
-                normalized_msg in _CANCEL_FLOW_TOKENS and pending_flow != ConversationFlow.CANCEL
-            ):
+            candidate = classify_fast_path_candidate(text)
+            if candidate is not None:
+                is_affirmative = resolve_confirmation(candidate, pending_flow)
+                if is_affirmative:
+                    slots["executing_message_id"] = ""
+                    return (
+                        ConversationStage.EXECUTING.value,
+                        slots,
+                        "",
+                    )
                 return (
                     ConversationStage.IDLE.value,
                     {},
                     render_template(TemplateKey.FLOW_CANCELLED),
-                )
-            if normalized_msg in _CANCEL_FLOW_TOKENS and pending_flow == ConversationFlow.CANCEL:
-                slots["executing_message_id"] = ""
-                return (
-                    ConversationStage.EXECUTING.value,
-                    slots,
-                    "",
                 )
             if intent:
                 has_updates = False

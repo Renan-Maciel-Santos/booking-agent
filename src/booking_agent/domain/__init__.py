@@ -4,6 +4,7 @@ from booking_agent.domain.booking_intent import BookingIntent, IntentType
 from booking_agent.domain.enums import (
     ActionKind,
     AppointmentStatus,
+    ConfirmationCandidate,
     ConversationFlow,
     ConversationStage,
     MessageStatus,
@@ -65,6 +66,7 @@ __all__ = [
     "BusinessHoursRepositoryPort",
     "CancelResult",
     "Clock",
+    "ConfirmationCandidate",
     "ConversationFlow",
     "ConversationStage",
     "ConversationStateNotFoundError",
