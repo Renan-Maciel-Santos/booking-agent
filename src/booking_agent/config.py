@@ -59,9 +59,17 @@ class Settings(BaseSettings):
     @field_validator("webhook_secret")
     @classmethod
     def validate_webhook_secret(cls, v: SecretStr) -> SecretStr:
-        """Ensure webhook_secret is not empty or whitespace."""
-        if not v.get_secret_value().strip():
+        """Ensure webhook_secret is not empty and not an insecure example placeholder."""
+        secret_value = v.get_secret_value().strip()
+        if not secret_value:
             raise ValueError("WEBHOOK_SECRET must not be empty")
+        if secret_value in {
+            "change-me-to-a-secure-random-secret",
+            "change-me",
+        }:
+            raise ValueError(
+                "WEBHOOK_SECRET must not use the example placeholder from .env.example"
+            )
         return v
 
     @field_validator("business_timezone")

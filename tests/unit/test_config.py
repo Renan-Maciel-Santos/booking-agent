@@ -1,5 +1,7 @@
 """Unit tests for environment-driven settings."""
 
+import pytest
+
 from tests.conftest import build_test_settings
 
 
@@ -129,3 +131,35 @@ def test_invalid_bounds_raise_validation_error() -> None:
 
     with pytest.raises(ValidationError):
         build_test_settings(max_body_bytes=500)
+
+
+def test_placeholder_webhook_secret_raises_validation_error() -> None:
+    from pydantic import SecretStr, ValidationError
+
+    with pytest.raises(
+        ValidationError,
+        match=r"WEBHOOK_SECRET must not use the example placeholder from \.env\.example",
+    ):
+        build_test_settings(webhook_secret=SecretStr("change-me-to-a-secure-random-secret"))
+
+
+def test_create_app_refuses_to_start_with_placeholder_webhook_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import ValidationError
+
+    from booking_agent.config import get_settings
+    from booking_agent.main import create_app
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("POSTGRES_USER", "u")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "p")
+    monkeypatch.setenv("POSTGRES_DB", "d")
+    monkeypatch.setenv("WEBHOOK_SECRET", "change-me-to-a-secure-random-secret")
+
+    with pytest.raises(
+        ValidationError,
+        match=r"WEBHOOK_SECRET must not use the example placeholder from \.env\.example",
+    ):
+        create_app()
+    get_settings.cache_clear()
