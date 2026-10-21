@@ -452,6 +452,51 @@ async def test_llm_unavailable_error_returns_503_and_logs_warning(
     assert not any(r.levelname == "ERROR" for r in caplog.records)
 
 
+async def test_malformed_json_without_valid_signature_returns_401(
+    test_settings: Settings,
+) -> None:
+    # Arrange: malformed JSON body sent with missing or invalid signature
+    clock = FakeClock()
+    malformed_body = b'{"message_id": "bad-json", "phone":'
+
+    # Act: post with invalid signature headers
+    async with _build_test_client(test_settings, clock) as client:
+        response = await client.post(
+            "/v1/messages",
+            content=malformed_body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature": "sha256=invalidsignature1234567890abcdef1234567890abcdef",
+                "X-Timestamp": str(int(clock.now().timestamp())),
+            },
+        )
+
+    # Assert: signature check happens before parsing body; must return 401, NOT 400
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert response.json() == {"detail": "Invalid signature or timestamp"}
+
+
+async def test_malformed_json_with_valid_signature_returns_400(
+    test_settings: Settings,
+) -> None:
+    # Arrange: malformed JSON body sent with cryptographically valid HMAC signature
+    clock = FakeClock()
+    malformed_body = b'{"message_id": "bad-json", "phone":'
+    headers = _sign(
+        malformed_body,
+        test_settings.webhook_secret.get_secret_value(),
+        fake_clock=clock,
+    )
+
+    # Act
+    async with _build_test_client(test_settings, clock) as client:
+        response = await client.post("/v1/messages", content=malformed_body, headers=headers)
+
+    # Assert: signature verification succeeds, but JSON parsing / Pydantic validation fails -> 400
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "detail" in response.json()
+
+
 def test_n8n_workflow_file_is_valid_json() -> None:
     # Arrange: find workflow JSON artifact
     workflow_path = (

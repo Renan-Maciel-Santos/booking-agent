@@ -5,7 +5,9 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from booking_agent.api.dependencies import (
     ConversationServiceDependency,
@@ -28,6 +30,16 @@ router = APIRouter(tags=["messages"])
     "/v1/messages",
     response_model=MessageResponse,
     status_code=status.HTTP_200_OK,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": IncomingMessageRequest.model_json_schema(),
+                }
+            },
+        }
+    },
     responses={
         200: {"description": "Turn processed successfully or duplicate completed message replayed"},
         202: {"description": "Duplicate message still in progress within lease (no text sent)"},
@@ -39,18 +51,26 @@ router = APIRouter(tags=["messages"])
     },
 )
 async def receive_message(
-    payload: IncomingMessageRequest,
-    _raw_body: Annotated[bytes, Depends(verify_webhook_signature)],
+    raw_body: Annotated[bytes, Depends(verify_webhook_signature)],
     rate_limiter: RateLimiterDependency,
     conversation_service: ConversationServiceDependency,
     uow_factory: UowFactoryDependency,
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> Response:
     """Process an incoming chat message turn from a verified channel webhook."""
-    # 1. Rate limiting check per phone number
+    # 1. Parse and validate body after cryptographic signature verification
+    try:
+        payload = IncomingMessageRequest.model_validate_json(raw_body)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=jsonable_encoder(exc.errors()),
+        ) from exc
+
+    # 2. Rate limiting check per phone number
     await rate_limiter.check(payload.phone)
 
-    # 2. Process conversation turn bounded by total request timeout
+    # 3. Process conversation turn bounded by total request timeout
     try:
         async with asyncio.timeout(settings.request_timeout_seconds):
             result = await conversation_service.process_turn(
@@ -108,7 +128,7 @@ async def receive_message(
             detail="Service temporarily unavailable. Please retry later.",
         ) from exc
 
-    # 3. Structured observability telemetry (message text is NEVER logged)
+    # 4. Structured observability telemetry (message text is NEVER logged)
     logger.info(
         "Message processed successfully",
         extra={
@@ -127,7 +147,7 @@ async def receive_message(
         },
     )
 
-    # 4. Map HTTP status code
+    # 5. Map HTTP status code
     if result.status_code == status.HTTP_202_ACCEPTED:
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
