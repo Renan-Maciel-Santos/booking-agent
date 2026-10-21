@@ -1,6 +1,6 @@
 """Configurable double for the Clock port."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 
 class FakeClock:
@@ -27,3 +27,11 @@ class FakeClock:
             new_time: New simulated current time.
         """
         self._current_time = new_time
+
+    def advance(self, delta: timedelta) -> None:
+        """Advance current simulated time by a duration.
+
+        Args:
+            delta: Duration to advance.
+        """
+        self._current_time += delta
