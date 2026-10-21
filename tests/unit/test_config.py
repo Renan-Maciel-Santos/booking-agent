@@ -95,3 +95,37 @@ def test_invalid_llm_provider_raises_validation_error() -> None:
 
     with pytest.raises(ValidationError):
         build_test_settings(llm_provider="unsupported_provider")
+
+
+def test_webhook_settings_defaults() -> None:
+    settings = build_test_settings()
+    assert settings.webhook_timestamp_tolerance_seconds == 300
+    assert settings.max_body_bytes == 65536
+    assert settings.max_text_length == 1000
+    assert settings.rate_limit_requests_per_minute == 10
+    assert settings.request_timeout_seconds == 15.0
+
+
+def test_webhook_secret_is_masked_in_repr() -> None:
+    settings = build_test_settings()
+    assert "test_webhook_secret_key_12345" not in repr(settings)
+    assert "test_webhook_secret_key_12345" not in str(settings.model_dump())
+
+
+def test_empty_webhook_secret_raises_validation_error() -> None:
+    import pytest
+    from pydantic import SecretStr, ValidationError
+
+    with pytest.raises(ValidationError, match="WEBHOOK_SECRET must not be empty"):
+        build_test_settings(webhook_secret=SecretStr("   "))
+
+
+def test_invalid_bounds_raise_validation_error() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        build_test_settings(request_timeout_seconds=0.0)
+
+    with pytest.raises(ValidationError):
+        build_test_settings(max_body_bytes=500)
