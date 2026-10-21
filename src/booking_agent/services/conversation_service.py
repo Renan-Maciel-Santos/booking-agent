@@ -15,12 +15,7 @@ from booking_agent.domain.enums import (
     ConversationStage,
     MessageStatus,
 )
-from booking_agent.domain.errors import (
-    LLMConfigurationError,
-    LLMInvalidOutputError,
-    LLMUnavailableError,
-    SlotUnavailableError,
-)
+from booking_agent.domain.errors import LLMInvalidOutputError, SlotUnavailableError
 from booking_agent.domain.ports import (
     Clock,
     IntentParser,
@@ -238,11 +233,10 @@ class ConversationService:
 
         try:
             return await self._process_turn(message_id, phone, text)
-        except (LLMUnavailableError, LLMConfigurationError):
-            async with self._uow_factory() as uow:
-                await uow.processed_messages.mark_failed(message_id)
-            raise
         except Exception:
+            # Catch-all is strictly for state cleanup (releasing the message lease by marking
+            # it as failed in its own short transaction) before re-raising the original exception;
+            # the error is never suppressed.
             async with self._uow_factory() as uow:
                 await uow.processed_messages.mark_failed(message_id)
             raise
