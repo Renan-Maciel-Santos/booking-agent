@@ -1,5 +1,6 @@
 """Fixtures and hooks shared by the whole test suite."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,9 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         folder_name = Path(item.path).parent.name
         if folder_name in _FOLDER_MARKERS:
             item.add_marker(_FOLDER_MARKERS[folder_name])
+
+    if os.environ.get("PYTEST_REVERSE") == "1":
+        items.reverse()
 
 
 def build_test_settings(**overrides: object) -> Settings:
