@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from booking_agent.config import Settings
 from booking_agent.database.engine import build_session_factory
 from booking_agent.database.unit_of_work import SqlAlchemyUnitOfWorkFactory
-from booking_agent.domain.ports import IntentParser
+from booking_agent.domain.ports import Clock, IntentParser
 from booking_agent.integrations.system_clock import SystemClock
 from booking_agent.repositories.health_repository import HealthRepository
 from booking_agent.services.booking_service import BookingService
@@ -105,3 +105,19 @@ def get_intent_parser(request: Request) -> IntentParser:
 
 
 IntentParserDependency = Annotated[IntentParser, Depends(get_intent_parser)]
+
+
+def get_clock(request: Request) -> Clock:
+    """Return the Clock port, allowing application state overrides in tests.
+
+    Args:
+        request: Current HTTP request.
+
+    Returns:
+        Clock implementation (defaults to SystemClock).
+    """
+    clock: Clock = getattr(request.app.state, "clock", None) or SystemClock()
+    return clock
+
+
+ClockDependency = Annotated[Clock, Depends(get_clock)]
