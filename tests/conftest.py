@@ -40,6 +40,7 @@ def build_test_settings(**overrides: object) -> Settings:
         "postgres_port": 5432,
         "log_level": "WARNING",
         "llm_provider": "fake",
+        "webhook_secret": SecretStr("test_webhook_secret_key_12345"),
     }
     values.update(overrides)
     # _env_file=None isolates tests from any developer .env file.

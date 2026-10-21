@@ -38,6 +38,7 @@ def postgres_container() -> Iterator[PostgresContainer]:
     os.environ["POSTGRES_HOST"] = container.get_container_host_ip()
     os.environ["POSTGRES_PORT"] = str(container.get_exposed_port(5432))
     os.environ["LLM_PROVIDER"] = "fake"
+    os.environ["WEBHOOK_SECRET"] = "integration-test-secret"
     get_settings.cache_clear()
 
     try:
@@ -45,6 +46,7 @@ def postgres_container() -> Iterator[PostgresContainer]:
     finally:
         container.stop()
         os.environ.pop("LLM_PROVIDER", None)
+        os.environ.pop("WEBHOOK_SECRET", None)
         get_settings.cache_clear()
 
 

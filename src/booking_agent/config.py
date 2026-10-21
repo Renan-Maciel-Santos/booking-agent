@@ -47,6 +47,23 @@ class Settings(BaseSettings):
     llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     openai_api_key: SecretStr | None = None
 
+    # Webhook security, gateway bounds, and rate limit settings
+    # SecretStr masks the secret in repr(), tracebacks and logs; required without default.
+    webhook_secret: SecretStr
+    webhook_timestamp_tolerance_seconds: int = Field(default=300, ge=1)
+    max_body_bytes: int = Field(default=65536, ge=1024)
+    max_text_length: int = Field(default=1000, ge=1)
+    rate_limit_requests_per_minute: int = Field(default=10, ge=1)
+    request_timeout_seconds: float = Field(default=15.0, gt=0)
+
+    @field_validator("webhook_secret")
+    @classmethod
+    def validate_webhook_secret(cls, v: SecretStr) -> SecretStr:
+        """Ensure webhook_secret is not empty or whitespace."""
+        if not v.get_secret_value().strip():
+            raise ValueError("WEBHOOK_SECRET must not be empty")
+        return v
+
     @field_validator("business_timezone")
     @classmethod
     def validate_timezone(cls, v: str) -> str:
