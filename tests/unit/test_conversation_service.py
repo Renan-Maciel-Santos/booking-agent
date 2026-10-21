@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, time, timedelta
+from unittest.mock import patch
 
 import pytest
 
@@ -465,3 +466,34 @@ async def test_customer_name_only_accepted_when_awaiting_and_valid() -> None:
         assert st3.stage == ConversationStage.AWAITING_CONFIRMATION.value
         assert st3.slots.get("customer_name") == "Maria Clara"
         assert "awaiting" not in st3.slots
+
+
+@pytest.mark.unit
+async def test_unexpected_exception_marks_message_as_failed_and_reraises() -> None:
+    """When _process_turn raises an unexpected error, mark message failed and re-raise."""
+    conv_service, uow_factory, _, _, _, _, _ = _create_unit_fixtures()
+    phone = "+5511999991121"
+    msg_id = "msg_unexpected_fail"
+
+    class ExplodingError(RuntimeError):
+        pass
+
+    with (
+        patch.object(
+            conv_service,
+            "_process_turn",
+            side_effect=ExplodingError("Simulated infrastructure catastrophe"),
+        ),
+        pytest.raises(ExplodingError),
+    ):
+        await conv_service.handle_message(
+            message_id=msg_id,
+            phone=phone,
+            text="Olá",
+        )
+
+    # Message must be marked failed to clear lease
+    async with uow_factory() as uow:
+        msg = await uow.processed_messages.get(msg_id)
+        assert msg is not None
+        assert msg.status == "failed"
