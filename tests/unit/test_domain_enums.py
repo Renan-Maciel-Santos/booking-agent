@@ -1,6 +1,6 @@
 """Unit tests for domain enums."""
 
-from booking_agent.domain.enums import AppointmentStatus, MessageStatus
+from booking_agent.domain.enums import AppointmentStatus, ConversationFlow, MessageStatus
 
 
 def test_appointment_status_values() -> None:
@@ -26,4 +26,17 @@ def test_message_status_values() -> None:
         MessageStatus.PROCESSING,
         MessageStatus.DONE,
         MessageStatus.FAILED,
+    }
+
+
+def test_conversation_flow_values() -> None:
+    """Verify ConversationFlow enum members and string values."""
+    assert ConversationFlow.BOOK.value == "book"
+    assert ConversationFlow.RESCHEDULE.value == "reschedule"
+    assert ConversationFlow.CANCEL.value == "cancel"
+    assert ConversationFlow("book") is ConversationFlow.BOOK
+    assert set(ConversationFlow) == {
+        ConversationFlow.BOOK,
+        ConversationFlow.RESCHEDULE,
+        ConversationFlow.CANCEL,
     }

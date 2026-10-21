@@ -14,6 +14,7 @@ from booking_agent.config import Settings
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
 from booking_agent.domain.enums import (
     AppointmentStatus,
+    ConversationFlow,
     ConversationStage,
     MessageStatus,
 )
@@ -433,7 +434,7 @@ class ConversationService:
             # Fast-path revalidation under lock
             if fast_path_candidate is not None:
                 if stage == ConversationStage.AWAITING_CONFIRMATION.value and "action_id" in slots:
-                    pending_flow = slots.get("flow", "book")
+                    pending_flow = slots.get("flow", ConversationFlow.BOOK.value)
 
                     # Disambiguate context-dependent confirmation:
                     # When confirming a cancellation flow, "pode cancelar" / "cancela" means
@@ -445,7 +446,7 @@ class ConversationService:
                     elif fast_path_candidate == "negative":
                         is_affirmative = False
                     else:  # "cancel_action"
-                        is_affirmative = pending_flow == "cancel"
+                        is_affirmative = pending_flow == ConversationFlow.CANCEL.value
 
                     if is_affirmative:
                         stage = ConversationStage.EXECUTING.value
@@ -545,12 +546,12 @@ class ConversationService:
         # Phase 4 & 5: Action Execution & Post-Action State Update
         # -------------------------------------------------------------
         t4_start = time_module.perf_counter()
-        flow = slots.get("flow", "book")
+        flow = slots.get("flow", ConversationFlow.BOOK.value)
         action_id_str = slots.get("action_id")
         action_id = uuid.UUID(action_id_str) if action_id_str else None
         outcome = "ok"
 
-        if flow == "book":
+        if flow == ConversationFlow.BOOK.value:
             service_id = uuid.UUID(slots["service_id"])
             barber_id = uuid.UUID(slots["barber_id"]) if slots.get("barber_id") else None
             target_date = date.fromisoformat(slots["local_date"])
@@ -618,7 +619,7 @@ class ConversationService:
                 else:
                     response = render_template(TemplateKey.NO_SLOTS_AVAILABLE)
 
-        elif flow == "reschedule":
+        elif flow == ConversationFlow.RESCHEDULE.value:
             appointment_id = uuid.UUID(slots["appointment_id"])
             target_date = date.fromisoformat(slots["local_date"])
             target_time = time.fromisoformat(slots["local_time"])
@@ -680,7 +681,7 @@ class ConversationService:
                 else:
                     response = render_template(TemplateKey.NO_SLOTS_AVAILABLE)
 
-        elif flow == "cancel":
+        elif flow == ConversationFlow.CANCEL.value:
             appointment_id = uuid.UUID(slots["appointment_id"])
             cancel_result = await self._booking_service.cancel(
                 appointment_id=appointment_id,
@@ -771,7 +772,7 @@ class ConversationService:
                         render_template(TemplateKey.NO_APPOINTMENTS_FOUND),
                     )
 
-                flow = slots.get("flow", "reschedule")
+                flow = slots.get("flow", ConversationFlow.RESCHEDULE.value)
                 service = await uow.services.get_by_id(appt.service_id)
                 barber = await uow.barbers.get_by_id(appt.barber_id)
                 slots["service_name"] = service.name if service else "Corte"
@@ -780,7 +781,7 @@ class ConversationService:
                 slots["local_date"] = local_start.date().isoformat()
                 slots["local_time"] = local_start.time().isoformat()
 
-                if flow == "cancel":
+                if flow == ConversationFlow.CANCEL.value:
                     slots["action_id"] = str(uuid.uuid4())
                     next_stage = ConversationStage.AWAITING_CONFIRMATION.value
                     resp = render_template(
@@ -856,8 +857,8 @@ class ConversationService:
                 slots.pop("alternative_slots", None)
                 slots["action_id"] = str(uuid.uuid4())
                 next_stage = ConversationStage.AWAITING_CONFIRMATION.value
-                flow = slots.get("flow", "book")
-                if flow == "reschedule":
+                flow = slots.get("flow", ConversationFlow.BOOK.value)
+                if flow == ConversationFlow.RESCHEDULE.value:
                     resp = render_template(
                         TemplateKey.CONFIRM_RESCHEDULE,
                         service=slots.get("service_name", "Corte"),
@@ -893,16 +894,20 @@ class ConversationService:
 
         # 3. State: AWAITING_CONFIRMATION (User replied with non-exact tokens)
         if stage == ConversationStage.AWAITING_CONFIRMATION.value:
-            pending_flow = slots.get("flow", "book")
+            pending_flow = slots.get("flow", ConversationFlow.BOOK.value)
             if normalized_msg in _NEGATIVE_TOKENS or (
-                normalized_msg in _CANCEL_FLOW_TOKENS and pending_flow != "cancel"
+                normalized_msg in _CANCEL_FLOW_TOKENS
+                and pending_flow != ConversationFlow.CANCEL.value
             ):
                 return (
                     ConversationStage.IDLE.value,
                     {},
                     render_template(TemplateKey.FLOW_CANCELLED),
                 )
-            if normalized_msg in _CANCEL_FLOW_TOKENS and pending_flow == "cancel":
+            if (
+                normalized_msg in _CANCEL_FLOW_TOKENS
+                and pending_flow == ConversationFlow.CANCEL.value
+            ):
                 slots["executing_message_id"] = ""
                 return (
                     ConversationStage.EXECUTING.value,
@@ -949,8 +954,8 @@ class ConversationService:
                     return await self._validate_booking_slots_and_confirm(uow, phone, slots)
 
             # Re-present confirmation prompt if user input was unclear
-            flow = slots.get("flow", "book")
-            if flow == "book":
+            flow = slots.get("flow", ConversationFlow.BOOK.value)
+            if flow == ConversationFlow.BOOK.value:
                 t_date = date.fromisoformat(slots["local_date"])
                 t_time = time.fromisoformat(slots["local_time"])
                 resp = render_template(
@@ -979,7 +984,11 @@ class ConversationService:
                 )
 
             if intent.intent == IntentType.CANCEL or intent.intent == IntentType.RESCHEDULE:
-                flow = "cancel" if intent.intent == IntentType.CANCEL else "reschedule"
+                flow = (
+                    ConversationFlow.CANCEL.value
+                    if intent.intent == IntentType.CANCEL
+                    else ConversationFlow.RESCHEDULE.value
+                )
                 slots["flow"] = flow
                 customer = await uow.customers.get_by_phone(phone)
                 if customer is None:
@@ -1013,7 +1022,7 @@ class ConversationService:
                     slots["local_date"] = start_local.date().isoformat()
                     slots["local_time"] = start_local.time().isoformat()
 
-                    if flow == "cancel":
+                    if flow == ConversationFlow.CANCEL.value:
                         slots["action_id"] = str(uuid.uuid4())
                         next_stage = ConversationStage.AWAITING_CONFIRMATION.value
                         resp = render_template(
@@ -1070,7 +1079,7 @@ class ConversationService:
                 )
 
             elif intent.intent == IntentType.BOOK:
-                slots["flow"] = "book"
+                slots["flow"] = ConversationFlow.BOOK.value
                 stage = ConversationStage.COLLECTING_BOOKING_DETAILS.value
             else:
                 return (
@@ -1080,8 +1089,8 @@ class ConversationService:
                 )
 
         # 5. State: COLLECTING_BOOKING_DETAILS
-        flow = slots.get("flow", "book")
-        if flow == "reschedule":
+        flow = slots.get("flow", ConversationFlow.BOOK.value)
+        if flow == ConversationFlow.RESCHEDULE.value:
             if intent and intent.local_date:
                 slots["local_date"] = intent.local_date.isoformat()
             if intent and intent.local_time:
@@ -1106,7 +1115,7 @@ class ConversationService:
                 render_template(TemplateKey.ASK_RESCHEDULE_DATETIME),
             )
 
-        # Flow == "book": merge slots
+        # Flow == ConversationFlow.BOOK: merge slots
         active_services = await uow.services.list_active()
         active_barbers = await uow.barbers.list_active()
 
