@@ -22,6 +22,7 @@ class PhoneRateLimiter:
         clock: Clock,
         max_requests: int = 10,
         window_seconds: float = 60.0,
+        cleanup_interval: int = 50,
     ) -> None:
         """Initialize the rate limiter.
 
@@ -29,12 +30,25 @@ class PhoneRateLimiter:
             clock: Injected clock port returning current timezone-aware datetime.
             max_requests: Maximum allowed requests within the window.
             window_seconds: Rolling window duration in seconds.
+            cleanup_interval: Run full sweep of stale entries every N calls.
         """
         self._clock = clock
         self._max_requests = max_requests
         self._window_seconds = window_seconds
+        self._cleanup_interval = cleanup_interval
         self._requests: dict[str, list[float]] = {}
         self._lock = asyncio.Lock()
+        self._call_count: int = 0
+
+    def _prune_stale_locked(self, cutoff: float) -> None:
+        """Evict all phone entries with no timestamps within the window (lock must be held)."""
+        stale_keys = [
+            phone
+            for phone, timestamps in self._requests.items()
+            if not any(ts > cutoff for ts in timestamps)
+        ]
+        for key in stale_keys:
+            del self._requests[key]
 
     async def is_allowed(self, phone: str) -> bool:
         """Determine whether an incoming request from phone is within quota.
@@ -49,9 +63,17 @@ class PhoneRateLimiter:
         cutoff = now - self._window_seconds
 
         async with self._lock:
+            # Cheap periodic sweep of stale keys across all phones every N calls
+            self._call_count += 1
+            if self._call_count % self._cleanup_interval == 0:
+                self._prune_stale_locked(cutoff)
+
             timestamps = self._requests.get(phone, [])
-            # Evict timestamps outside the rolling window
             valid_timestamps = [ts for ts in timestamps if ts > cutoff]
+
+            # Immediately remove phone entry if no timestamps remain in the current window
+            if phone in self._requests and not valid_timestamps:
+                del self._requests[phone]
 
             if len(valid_timestamps) >= self._max_requests:
                 self._requests[phone] = valid_timestamps
@@ -82,13 +104,7 @@ class PhoneRateLimiter:
         now = self._clock.now().timestamp()
         cutoff = now - self._window_seconds
         async with self._lock:
-            stale_keys = [
-                phone
-                for phone, timestamps in self._requests.items()
-                if not any(ts > cutoff for ts in timestamps)
-            ]
-            for key in stale_keys:
-                del self._requests[key]
+            self._prune_stale_locked(cutoff)
 
 
 def get_rate_limiter(
