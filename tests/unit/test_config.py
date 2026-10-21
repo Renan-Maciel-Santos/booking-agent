@@ -110,8 +110,9 @@ def test_webhook_settings_defaults() -> None:
 
 def test_webhook_secret_is_masked_in_repr() -> None:
     settings = build_test_settings()
-    assert "test_webhook_secret_key_12345" not in repr(settings)
-    assert "test_webhook_secret_key_12345" not in str(settings.model_dump())
+    raw_secret = settings.webhook_secret.get_secret_value()
+    assert raw_secret not in repr(settings)
+    assert raw_secret not in str(settings.model_dump())
 
 
 def test_empty_webhook_secret_raises_validation_error() -> None:
@@ -138,7 +139,7 @@ def test_placeholder_webhook_secret_raises_validation_error() -> None:
 
     with pytest.raises(
         ValidationError,
-        match=r"WEBHOOK_SECRET must not use the example placeholder from \.env\.example",
+        match=r"WEBHOOK_SECRET must not use an example placeholder starting with 'change-me'",
     ):
         build_test_settings(webhook_secret=SecretStr("change-me-to-a-secure-random-secret"))
 
@@ -159,7 +160,61 @@ def test_create_app_refuses_to_start_with_placeholder_webhook_secret(
 
     with pytest.raises(
         ValidationError,
-        match=r"WEBHOOK_SECRET must not use the example placeholder from \.env\.example",
+        match=r"WEBHOOK_SECRET must not use an example placeholder starting with 'change-me'",
     ):
         create_app()
     get_settings.cache_clear()
+
+
+def test_webhook_secret_whitespace_normalized_and_used_in_hmac() -> None:
+    from pydantic import SecretStr
+
+    from booking_agent.api.security import compute_signature
+
+    clean_secret = "a" * 32
+    padded_secret = f"  \n\t{clean_secret}\n  "
+    settings = build_test_settings(webhook_secret=SecretStr(padded_secret))
+    assert settings.webhook_secret.get_secret_value() == clean_secret
+
+    timestamp = 1729500000
+    raw_body = b'{"hello": "world"}'
+    sig_from_settings = compute_signature(
+        settings.webhook_secret.get_secret_value(), timestamp, raw_body
+    )
+    sig_from_clean = compute_signature(clean_secret, timestamp, raw_body)
+    sig_from_padded = compute_signature(padded_secret, timestamp, raw_body)
+
+    assert sig_from_settings == sig_from_clean
+    assert sig_from_settings != sig_from_padded
+
+
+def test_webhook_secret_change_me_prefix_rejected() -> None:
+    from pydantic import SecretStr, ValidationError
+
+    with pytest.raises(
+        ValidationError,
+        match=r"WEBHOOK_SECRET must not use an example placeholder starting with 'change-me'",
+    ) as exc_info:
+        build_test_settings(webhook_secret=SecretStr("change-me-123"))
+
+    assert "change-me-123" not in str(exc_info.value)
+
+
+def test_webhook_secret_length_validation() -> None:
+    from pydantic import SecretStr, ValidationError
+
+    # 31 characters: rejected
+    secret_31 = "x" * 31
+    with pytest.raises(
+        ValidationError,
+        match=r"WEBHOOK_SECRET must be at least 32 characters long",
+    ) as exc_info:
+        build_test_settings(webhook_secret=SecretStr(secret_31))
+
+    assert secret_31 not in str(exc_info.value)
+    assert 'python -c "import secrets; print(secrets.token_hex(32))"' in str(exc_info.value)
+
+    # 32 characters: accepted
+    secret_32 = "x" * 32
+    settings = build_test_settings(webhook_secret=SecretStr(secret_32))
+    assert settings.webhook_secret.get_secret_value() == secret_32

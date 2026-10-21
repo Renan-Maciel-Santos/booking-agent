@@ -1,6 +1,7 @@
 """Fixtures that start a real PostgreSQL container via testcontainers."""
 
 import os
+import secrets
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def postgres_container() -> Iterator[PostgresContainer]:
     os.environ["POSTGRES_HOST"] = container.get_container_host_ip()
     os.environ["POSTGRES_PORT"] = str(container.get_exposed_port(5432))
     os.environ["LLM_PROVIDER"] = "fake"
-    os.environ["WEBHOOK_SECRET"] = "integration-test-secret"
+    os.environ["WEBHOOK_SECRET"] = secrets.token_hex(32)
     get_settings.cache_clear()
 
     try:

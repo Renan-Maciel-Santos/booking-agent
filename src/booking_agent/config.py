@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+MIN_WEBHOOK_SECRET_LENGTH: int = 32
+
 
 class Settings(BaseSettings):
     """Typed runtime configuration.
@@ -59,18 +61,25 @@ class Settings(BaseSettings):
     @field_validator("webhook_secret")
     @classmethod
     def validate_webhook_secret(cls, v: SecretStr) -> SecretStr:
-        """Ensure webhook_secret is not empty and not an insecure example placeholder."""
+        """Ensure webhook_secret is normalized, non-placeholder, and meets minimum length."""
         secret_value = v.get_secret_value().strip()
         if not secret_value:
             raise ValueError("WEBHOOK_SECRET must not be empty")
-        if secret_value in {
-            "change-me-to-a-secure-random-secret",
-            "change-me",
-        }:
+        suggestion = (
+            "Generate a secure secret with: "
+            'python -c "import secrets; print(secrets.token_hex(32))"'
+        )
+        if secret_value.startswith("change-me"):
             raise ValueError(
-                "WEBHOOK_SECRET must not use the example placeholder from .env.example"
+                "WEBHOOK_SECRET must not use an example placeholder starting with 'change-me'. "
+                f"{suggestion}"
             )
-        return v
+        if len(secret_value) < MIN_WEBHOOK_SECRET_LENGTH:
+            raise ValueError(
+                f"WEBHOOK_SECRET must be at least {MIN_WEBHOOK_SECRET_LENGTH} characters long. "
+                f"{suggestion}"
+            )
+        return SecretStr(secret_value)
 
     @field_validator("business_timezone")
     @classmethod
