@@ -33,6 +33,11 @@ def _build_test_client(
 ) -> AsyncClient:
     """Create an AsyncClient with mocked/faked dependencies for unit isolation."""
     app = create_app(settings)
+    app.state.rate_limiter = rate_limiter_override or PhoneRateLimiter(
+        clock=clock,
+        max_requests=settings.rate_limit_requests_per_minute,
+        window_seconds=60.0,
+    )
     uow_factory = FakeUnitOfWorkFactory(clock=clock)
 
     if conversation_service_override is not None:

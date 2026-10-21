@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from openai import AsyncOpenAI
 
 from booking_agent.api.middleware import BodySizeLimitMiddleware, RequestIdMiddleware
+from booking_agent.api.rate_limiter import PhoneRateLimiter
 from booking_agent.api.routers import health, messages
 from booking_agent.config import Settings, get_settings
 from booking_agent.database.engine import build_engine
@@ -39,6 +40,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Own the engine and adapter lifecycles: create on startup, dispose on shutdown."""
         app.state.engine = build_engine(app_settings)
+        clock = getattr(app.state, "clock", None) or SystemClock()
+        app.state.rate_limiter = PhoneRateLimiter(
+            clock=clock,
+            max_requests=app_settings.rate_limit_requests_per_minute,
+            window_seconds=60.0,
+        )
 
         # Wire IntentParser singleton based on configured provider
         if app_settings.llm_provider == "fake":
