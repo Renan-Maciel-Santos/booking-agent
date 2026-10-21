@@ -11,7 +11,7 @@ from booking_agent.database.models import BookingAction
 from booking_agent.domain.errors import ActionAlreadyExistsError
 
 _UNIQUE_VIOLATION_SQLSTATE = "23505"
-_ACTION_KEY_CONSTRAINTS = frozenset({"booking_actions_pkey", "pk_booking_actions"})
+_ACTION_KEY_CONSTRAINT = "pk_booking_actions"
 
 
 def _extract_constraint_name(exc: IntegrityError) -> str | None:
@@ -38,12 +38,11 @@ def _extract_constraint_name(exc: IntegrityError) -> str | None:
 
 
 def _is_action_key_unique_violation(exc: IntegrityError) -> bool:
-    """Check if IntegrityError represents a 23505 violation specifically on booking_actions PK.
+    """Check if IntegrityError represents a 23505 violation specifically on pk_booking_actions.
 
-    Only violations of 'booking_actions_pkey' or 'pk_booking_actions' are converted
-    to ActionAlreadyExistsError. Any other unique constraint violation (such as
-    'uq_customers_phone' when concurrent bookings register the same new customer)
-    must propagate intact as IntegrityError.
+    Only violations of 'pk_booking_actions' are converted to ActionAlreadyExistsError.
+    Any other unique constraint violation (such as 'uq_customers_phone' when concurrent
+    bookings register the same new customer) must propagate intact as IntegrityError.
     """
     orig = getattr(exc, "orig", None)
     if orig is None:
@@ -53,15 +52,15 @@ def _is_action_key_unique_violation(exc: IntegrityError) -> bool:
         return False
 
     constraint = _extract_constraint_name(exc)
-    return constraint in _ACTION_KEY_CONSTRAINTS
+    return constraint == _ACTION_KEY_CONSTRAINT
 
 
 class BookingActionRepository:
     """Repository managing BookingAction persistence and action key idempotency.
 
     Note on Error Translation:
-        Only SQLSTATE 23505 specifically targeting the booking_actions PK constraint
-        ('booking_actions_pkey' or 'pk_booking_actions') is translated to ActionAlreadyExistsError.
+        Only SQLSTATE 23505 specifically targeting the primary key constraint
+        ('pk_booking_actions') is translated to ActionAlreadyExistsError.
         All other integrity violations (e.g., FK violations, customer phone unique violations,
         NOT NULL violations, check constraints) are propagated as IntegrityError.
     """
