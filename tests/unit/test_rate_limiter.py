@@ -101,6 +101,57 @@ async def test_prune_cleans_stale_records(
 
 
 @pytest.mark.asyncio
+async def test_inactive_phones_evicted_from_memory_automatically(
+    fake_clock: FakeClock,
+) -> None:
+    # Arrange: limiter configured to sweep every 2 calls
+    limiter = PhoneRateLimiter(
+        clock=fake_clock,
+        max_requests=5,
+        window_seconds=60.0,
+        cleanup_interval=2,
+    )
+    phone_a = "+5511999990001"
+    phone_b = "+5511999990002"
+
+    # Phone A makes a call at t=0
+    assert await limiter.is_allowed(phone_a) is True
+    assert phone_a in limiter._requests
+
+    # Advance clock past the rolling window (inactive phone A)
+    fake_clock.advance(timedelta(seconds=65))
+
+    # Phone B makes 2 calls at t=65, reaching cleanup_interval=2 and triggering periodic sweep
+    assert await limiter.is_allowed(phone_b) is True
+    assert await limiter.is_allowed(phone_b) is True
+
+    # Assert: Phone A was automatically evicted from memory without explicit prune() call
+    assert phone_a not in limiter._requests
+    assert phone_b in limiter._requests
+
+
+@pytest.mark.asyncio
+async def test_reentering_phone_cleans_stale_timestamps_before_adding_new(
+    fake_clock: FakeClock,
+) -> None:
+    # Arrange
+    limiter = PhoneRateLimiter(clock=fake_clock, max_requests=5, window_seconds=60.0)
+    phone = "+5511999990001"
+
+    assert await limiter.is_allowed(phone) is True
+    t0 = fake_clock.now().timestamp()
+    assert limiter._requests[phone] == [t0]
+
+    # Advance past window
+    fake_clock.advance(timedelta(seconds=80))
+    t1 = fake_clock.now().timestamp()
+
+    # Re-entry: old timestamps cleared, only new timestamp kept
+    assert await limiter.is_allowed(phone) is True
+    assert limiter._requests[phone] == [t1]
+
+
+@pytest.mark.asyncio
 async def test_get_rate_limiter_dependency_in_fastapi(
     fake_clock: FakeClock,
 ) -> None:
