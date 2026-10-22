@@ -1222,7 +1222,7 @@ async def test_unrecognized_reply_during_cancel_confirmation_never_executes(
 
 
 @pytest.mark.unit
-async def test_scenario_a_reschedule_with_hour_change_confirms_reschedule_and_executes() -> None:
+async def test_changing_time_during_reschedule_confirmation_moves_the_same_appointment() -> None:
     """Scenario A: Client requests reschedule, in confirmation asks for 17h, confirms with 'sim'.
     Verify exactly 1 appointment remains, moved to 17:00, and confirmation prompt was reschedule.
     """
@@ -1300,7 +1300,7 @@ async def test_scenario_a_reschedule_with_hour_change_confirms_reschedule_and_ex
 
 
 @pytest.mark.unit
-async def test_scenario_b_cancel_with_new_datetime_converts_to_reschedule_and_executes() -> None:
+async def test_new_datetime_during_cancel_confirmation_becomes_a_reschedule() -> None:
     """Scenario B: Client asks to cancel, in confirmation specifies new date/time, confirms.
     Verify exactly 1 appointment remains, rescheduled to new date/time (not cancelled, no dup).
     """
@@ -1377,7 +1377,7 @@ async def test_scenario_b_cancel_with_new_datetime_converts_to_reschedule_and_ex
 
 
 @pytest.mark.unit
-async def test_scenario_c_book_with_time_change_confirms_and_executes() -> None:
+async def test_changing_time_during_booking_confirmation_books_the_new_time() -> None:
     """Scenario C: Client creates booking, changes time during confirmation, confirms with 'sim'.
     Verify exactly 1 appointment exists, at the new time.
     """
@@ -1446,7 +1446,7 @@ async def test_scenario_c_book_with_time_change_confirms_and_executes() -> None:
 
 
 @pytest.mark.unit
-async def test_scenario_d_reschedule_unavailable_chooses_alt_confirms_executes() -> None:
+async def test_unavailable_reschedule_alternative_keeps_the_original_appointment_flow() -> None:
     """Scenario D: Client reschedules, chooses occupied slot, receives alts, picks alt 1, confirms.
     Verify exactly 1 appointment remains, rescheduled to the chosen alternative.
     """
