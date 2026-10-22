@@ -3,7 +3,9 @@
 import logging
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -17,7 +19,7 @@ from booking_agent.domain.enums import (
 )
 from booking_agent.domain.errors import LLMInvalidOutputError
 from booking_agent.integrations.llm.fake_intent_parser import FakeIntentParser
-from booking_agent.services.booking_service import BookingService
+from booking_agent.services.booking_service import BookingService, localize_datetime
 from booking_agent.services.conversation_service import (
     ConversationService,
     classify_fast_path_candidate,
@@ -1114,8 +1116,14 @@ async def test_unrecognized_reply_during_cancel_confirmation_never_executes(
 ) -> None:
     """Verify that no LLM intent (with or without extracted slot updates) can trigger
     execution while awaiting confirmation of a cancellation.
+
+    If slot updates are provided, verify the pending cancellation converts into
+    a reschedule confirmation, and confirming with 'sim' executes the reschedule
+    without creating duplicate appointments or unwanted cancellations.
     """
-    conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
+    conv_service, uow_factory, clock, intent_parser, settings, svc_id, barber_id = (
+        _create_unit_fixtures()
+    )
     phone = "+5511999994001"
     target_dt = clock.now() + timedelta(days=1)
 
@@ -1176,9 +1184,393 @@ async def test_unrecognized_reply_during_cancel_confirmation_never_executes(
     if not has_updates:
         assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
         assert turn_result.response_text == render_template(TemplateKey.CLARIFICATION_PROMPT)
+        # Crucial invariant: original appointment remains active and confirmed in the repository
+        assert appt_after is not None
+        assert appt_after.status == AppointmentStatus.CONFIRMED
     else:
-        assert st.stage != ConversationStage.EXECUTING.value
+        assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+        assert turn_result.response_text is not None
+        assert "Podemos confirmar a remarcação" in turn_result.response_text
 
-    # Crucial invariant: original appointment remains active and confirmed in the repository
-    assert appt_after is not None
-    assert appt_after.status == AppointmentStatus.CONFIRMED
+        # Turn 2: Send "sim" to confirm the reschedule
+        yes_resp = await conv_service.handle_message(
+            message_id=f"msg_cancel_confirm_yes_{intent_type.value}",
+            phone=phone,
+            text="sim",
+        )
+        assert yes_resp is not None
+        assert "remarcado com sucesso" in yes_resp
+
+        async with uow_factory() as uow:
+            all_appts = await uow.appointments.list_by_customer(cust.id)
+            appt_final = await uow.appointments.get_by_id(appt.id)
+
+        # Invariants: no duplicate appointments, no cancellation unconfirmed by user
+        assert len(all_appts) == 1
+        assert appt_final is not None
+        assert appt_final.id == appt.id
+        assert appt_final.status == AppointmentStatus.CONFIRMED.value
+        expected_new_dt = localize_datetime(
+            target_dt.date() + timedelta(days=1),
+            time(14, 0),
+            ZoneInfo(settings.business_timezone),
+        )
+        assert appt_final.starts_at == expected_new_dt
+
+
+@pytest.mark.unit
+async def test_scenario_a_reschedule_with_hour_change_confirms_reschedule_and_executes() -> None:
+    """Scenario A: Client requests reschedule, in confirmation asks for 17h, confirms with 'sim'.
+    Verify exactly 1 appointment remains, moved to 17:00, and confirmation prompt was reschedule.
+    """
+    conv_service, uow_factory, clock, intent_parser, settings, svc_id, barber_id = (
+        _create_unit_fixtures()
+    )
+    phone = "+5511999995001"
+    tomorrow_date = clock.now().date() + timedelta(days=1)
+    business_tz = ZoneInfo(settings.business_timezone)
+    initial_start_dt = localize_datetime(tomorrow_date, time(14, 0), business_tz)
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Cenário A", phone=phone)
+        appt = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=initial_start_dt,
+            ends_at=initial_start_dt + timedelta(minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+
+    # Turn 1: Client initiates reschedule to tomorrow at 15h
+    intent_parser._responses["remarcar para amanha as 15h"] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        local_date=tomorrow_date,
+        local_time=time(15, 0),
+    )
+    resp1 = await conv_service.handle_message(
+        message_id="msg_scen_a_1",
+        phone=phone,
+        text="remarcar para amanha as 15h",
+    )
+    assert resp1 is not None
+    assert "Podemos confirmar a remarcação" in resp1
+    assert "15:00" in resp1
+
+    # Turn 2: Client changes time during confirmation: "melhor às 17h"
+    intent_parser._responses["melhor às 17h"] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        local_time=time(17, 0),
+    )
+    resp2 = await conv_service.handle_message(
+        message_id="msg_scen_a_2",
+        phone=phone,
+        text="melhor às 17h",
+    )
+    assert resp2 is not None
+    # Confirmation prompt displayed is of reschedule
+    assert "Podemos confirmar a remarcação" in resp2
+    assert "17:00" in resp2
+
+    # Turn 3: Client confirms with "sim"
+    resp3 = await conv_service.handle_message(
+        message_id="msg_scen_a_3",
+        phone=phone,
+        text="sim",
+    )
+    assert resp3 is not None
+    assert "remarcado com sucesso" in resp3
+    assert "17:00" in resp3
+
+    # Database verification
+    async with uow_factory() as uow:
+        all_appts = await uow.appointments.list_by_customer(cust.id)
+        appt_final = await uow.appointments.get_by_id(appt.id)
+
+    assert len(all_appts) == 1
+    assert appt_final is not None
+    assert appt_final.id == appt.id
+    assert appt_final.status == AppointmentStatus.CONFIRMED.value
+    expected_17h = localize_datetime(tomorrow_date, time(17, 0), business_tz)
+    assert appt_final.starts_at == expected_17h
+
+
+@pytest.mark.unit
+async def test_scenario_b_cancel_with_new_datetime_converts_to_reschedule_and_executes() -> None:
+    """Scenario B: Client asks to cancel, in confirmation specifies new date/time, confirms.
+    Verify exactly 1 appointment remains, rescheduled to new date/time (not cancelled, no dup).
+    """
+    conv_service, uow_factory, clock, intent_parser, settings, svc_id, barber_id = (
+        _create_unit_fixtures()
+    )
+    phone = "+5511999995002"
+    tomorrow_date = clock.now().date() + timedelta(days=1)
+    target_new_date = tomorrow_date + timedelta(days=1)
+    business_tz = ZoneInfo(settings.business_timezone)
+    initial_start_dt = localize_datetime(tomorrow_date, time(14, 0), business_tz)
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Cenário B", phone=phone)
+        appt = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=initial_start_dt,
+            ends_at=initial_start_dt + timedelta(minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+
+    # Turn 1: Client asks to cancel
+    intent_parser._responses["quero cancelar meu agendamento"] = BookingIntent(
+        intent=IntentType.CANCEL,
+    )
+    resp1 = await conv_service.handle_message(
+        message_id="msg_scen_b_1",
+        phone=phone,
+        text="quero cancelar meu agendamento",
+    )
+    assert resp1 is not None
+    assert "Deseja realmente cancelar seu agendamento" in resp1
+
+    # Turn 2: Client specifies new date/time during cancel confirmation
+    update_text = "prefiro mudar para quinta-feira às 10h"
+    intent_parser._responses[update_text] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        local_date=target_new_date,
+        local_time=time(10, 0),
+    )
+    resp2 = await conv_service.handle_message(
+        message_id="msg_scen_b_2",
+        phone=phone,
+        text=update_text,
+    )
+    assert resp2 is not None
+    # Confirmation prompt displayed is of reschedule ("de <original> para <novo>")
+    assert "Podemos confirmar a remarcação" in resp2
+    assert "10:00" in resp2
+
+    # Turn 3: Client confirms with "sim"
+    resp3 = await conv_service.handle_message(
+        message_id="msg_scen_b_3",
+        phone=phone,
+        text="sim",
+    )
+    assert resp3 is not None
+    assert "remarcado com sucesso" in resp3
+
+    # Database verification
+    async with uow_factory() as uow:
+        all_appts = await uow.appointments.list_by_customer(cust.id)
+        appt_final = await uow.appointments.get_by_id(appt.id)
+
+    assert len(all_appts) == 1
+    assert appt_final is not None
+    assert appt_final.id == appt.id
+    assert appt_final.status == AppointmentStatus.CONFIRMED.value
+    expected_new_dt = localize_datetime(target_new_date, time(10, 0), business_tz)
+    assert appt_final.starts_at == expected_new_dt
+
+
+@pytest.mark.unit
+async def test_scenario_c_book_with_time_change_confirms_and_executes() -> None:
+    """Scenario C: Client creates booking, changes time during confirmation, confirms with 'sim'.
+    Verify exactly 1 appointment exists, at the new time.
+    """
+    conv_service, uow_factory, clock, intent_parser, settings, _svc_id, _barber_id = (
+        _create_unit_fixtures()
+    )
+    phone = "+5511999995003"
+    tomorrow_date = clock.now().date() + timedelta(days=1)
+    business_tz = ZoneInfo(settings.business_timezone)
+
+    async with uow_factory() as uow:
+        await uow.customers.create(name="Maria", phone=phone)
+
+    # Turn 1: Client initiates booking for tomorrow at 14h
+    booking_init_text = "quero agendar corte amanhã às 14h com Carlos Barber"
+    intent_parser._responses[booking_init_text] = BookingIntent(
+        intent=IntentType.BOOK,
+        service_name="Corte de Cabelo",
+        local_date=tomorrow_date,
+        local_time=time(14, 0),
+        barber_name="Carlos Barber",
+    )
+    resp1 = await conv_service.handle_message(
+        message_id="msg_scen_c_1",
+        phone=phone,
+        text=booking_init_text,
+    )
+    assert resp1 is not None
+    assert "Podemos confirmar? Agendamento de Corte" in resp1
+    assert "14:00" in resp1
+
+    # Turn 2: Client changes time during booking confirmation: "mudar para às 16h"
+    intent_parser._responses["mudar para às 16h"] = BookingIntent(
+        intent=IntentType.BOOK,
+        local_time=time(16, 0),
+    )
+    resp2 = await conv_service.handle_message(
+        message_id="msg_scen_c_2",
+        phone=phone,
+        text="mudar para às 16h",
+    )
+    assert resp2 is not None
+    assert "Podemos confirmar? Agendamento de Corte" in resp2
+    assert "16:00" in resp2
+
+    # Turn 3: Client confirms with "sim"
+    resp3 = await conv_service.handle_message(
+        message_id="msg_scen_c_3",
+        phone=phone,
+        text="sim",
+    )
+    assert resp3 is not None
+    assert "Seu horário para Corte de Cabelo está confirmado" in resp3
+    assert "16:00" in resp3
+
+    # Database verification
+    async with uow_factory() as uow:
+        cust = await uow.customers.get_by_phone(phone)
+        assert cust is not None
+        all_appts = await uow.appointments.list_by_customer(cust.id)
+
+    assert len(all_appts) == 1
+    assert all_appts[0].status == AppointmentStatus.CONFIRMED.value
+    expected_16h = localize_datetime(tomorrow_date, time(16, 0), business_tz)
+    assert all_appts[0].starts_at == expected_16h
+
+
+@pytest.mark.unit
+async def test_scenario_d_reschedule_unavailable_chooses_alt_confirms_executes() -> None:
+    """Scenario D: Client reschedules, chooses occupied slot, receives alts, picks alt 1, confirms.
+    Verify exactly 1 appointment remains, rescheduled to the chosen alternative.
+    """
+    conv_service, uow_factory, clock, intent_parser, settings, svc_id, barber_id = (
+        _create_unit_fixtures()
+    )
+    phone = "+5511999995004"
+    other_phone = "+5511999995005"
+    tomorrow_date = clock.now().date() + timedelta(days=1)
+    business_tz = ZoneInfo(settings.business_timezone)
+    initial_start_dt = localize_datetime(tomorrow_date, time(14, 0), business_tz)
+    occupied_dt = localize_datetime(tomorrow_date, time(15, 0), business_tz)
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Cenário D", phone=phone)
+        other_cust = await uow.customers.create(name="Outro Cliente", phone=other_phone)
+        # Client's original appointment at 14:00
+        appt = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=initial_start_dt,
+            ends_at=initial_start_dt + timedelta(minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        # Occupied slot by another client at 15:00
+        await uow.appointments.create(
+            customer_id=other_cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=occupied_dt,
+            ends_at=occupied_dt + timedelta(minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+
+    # Turn 1: Client enters reschedule confirmation
+    intent_parser._responses["remarcar para amanha as 14h"] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        local_date=tomorrow_date,
+        local_time=time(14, 0),
+    )
+    resp1 = await conv_service.handle_message(
+        message_id="msg_scen_d_1",
+        phone=phone,
+        text="remarcar para amanha as 14h",
+    )
+    assert resp1 is not None
+    assert "Podemos confirmar a remarcação" in resp1
+
+    # Turn 2: Client changes time to 15h, which is occupied
+    intent_parser._responses["melhor às 15h"] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        local_time=time(15, 0),
+    )
+    resp2 = await conv_service.handle_message(
+        message_id="msg_scen_d_2",
+        phone=phone,
+        text="melhor às 15h",
+    )
+    assert resp2 is not None
+    assert "já está ocupado" in resp2
+    assert "Temos estes horários disponíveis" in resp2
+
+    # Turn 3: Client picks alternative 1
+    resp3 = await conv_service.handle_message(
+        message_id="msg_scen_d_3",
+        phone=phone,
+        text="1",
+    )
+    assert resp3 is not None
+    assert "Podemos confirmar a remarcação" in resp3
+
+    # Turn 4: Client confirms with "sim"
+    resp4 = await conv_service.handle_message(
+        message_id="msg_scen_d_4",
+        phone=phone,
+        text="sim",
+    )
+    assert resp4 is not None
+    assert "remarcado com sucesso" in resp4
+
+    # Database verification
+    async with uow_factory() as uow:
+        all_appts = await uow.appointments.list_by_customer(cust.id)
+        appt_final = await uow.appointments.get_by_id(appt.id)
+
+    assert len(all_appts) == 1
+    assert appt_final is not None
+    assert appt_final.id == appt.id
+    assert appt_final.status == AppointmentStatus.CONFIRMED.value
+    assert appt_final.starts_at != initial_start_dt
+    assert appt_final.starts_at != occupied_dt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("flow", "expected_template_fragment"),
+    [
+        (ConversationFlow.BOOK, "Podemos confirmar? Agendamento de"),
+        (ConversationFlow.RESCHEDULE, "Podemos confirmar a remarcação de"),
+        (ConversationFlow.CANCEL, "Deseja realmente cancelar seu agendamento"),
+    ],
+)
+async def test_awaiting_confirmation_invariant_matches_flow_template(
+    flow: ConversationFlow,
+    expected_template_fragment: str,
+) -> None:
+    """Parameterized invariant for the 3 flows: when entering AWAITING_CONFIRMATION,
+    the template displayed strictly corresponds to the recorded flow.
+    """
+    conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
+    slots: dict[str, Any] = {
+        "service_name": "Corte de Cabelo",
+        "barber_name": "Carlos Barber",
+        "local_date": "2026-10-25",
+        "local_time": "14:00:00",
+        "old_date_time": "24/10 às 10:00",
+        "customer_name": "Cliente Teste",
+        "service_price_cents": 4500,
+    }
+
+    stage, out_slots, prompt = conv_service._enter_confirmation(flow=flow, slots=slots)
+
+    assert stage == ConversationStage.AWAITING_CONFIRMATION.value
+    assert out_slots.get("flow") == flow.value
+    assert "action_id" in out_slots
+    assert expected_template_fragment in prompt
