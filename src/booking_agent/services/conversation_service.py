@@ -292,7 +292,7 @@ class ConversationService:
         self._settings = settings
         self._business_tz = ZoneInfo(settings.business_timezone)
 
-    def _get_required_flow(
+    def _extract_pending_flow(
         self,
         stage: str,
         slots: dict[str, Any],
@@ -312,12 +312,13 @@ class ConversationService:
             Validated ConversationFlow member, or None if missing or invalid.
         """
         raw_flow = slots.get("flow")
+        masked_phone = mask_phone(phone)
         if not raw_flow:
             logger.error(
                 "Missing pending flow in state slots for conversation",
                 extra={
                     "event": "missing_pending_flow",
-                    "conversation_id": phone,
+                    "conversation_id": masked_phone,
                     "stage": stage,
                 },
             )
@@ -331,11 +332,14 @@ class ConversationService:
                 raw_flow,
                 extra={
                     "event": "missing_pending_flow",
-                    "conversation_id": phone,
+                    "conversation_id": masked_phone,
                     "stage": stage,
                 },
             )
             return None
+
+    # Backward compatibility alias
+    _get_required_flow = _extract_pending_flow
 
     async def handle_message(self, message_id: str, phone: str, text: str) -> str:
         """Process an incoming chat message and return response text for user."""

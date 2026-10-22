@@ -22,6 +22,7 @@ from booking_agent.services.conversation_service import (
     ConversationService,
     classify_fast_path_candidate,
     is_valid_customer_name,
+    mask_phone,
     resolve_confirmation,
 )
 from booking_agent.services.entity_resolver import EntityResolver
@@ -988,9 +989,23 @@ async def test_awaiting_confirmation_missing_flow_fails_safe_and_logs_error(
         for rec in caplog.records
         if rec.levelno == logging.ERROR and getattr(rec, "event", None) == "missing_pending_flow"
     ]
-    assert len(error_logs) >= 1
-    assert getattr(error_logs[0], "conversation_id", None) == phone
+    assert getattr(error_logs[0], "conversation_id", None) == mask_phone(phone)
+    assert not hasattr(error_logs[0], "phone")
     assert getattr(error_logs[0], "stage", None) == ConversationStage.AWAITING_CONFIRMATION.value
+
+
+@pytest.mark.unit
+def test_mask_phone_privacy() -> None:
+    """mask_phone preserves country/area prefix and last 4 digits while masking the rest."""
+    phone = "+5511999998888"
+    masked = mask_phone(phone)
+    assert masked == "+5511*****8888"
+    assert phone[-4:] in masked
+    assert "99999" not in masked
+
+    # Very short strings are fully masked with asterisks
+    assert mask_phone("12345678") == "********"
+    assert mask_phone("1234") == "****"
 
 
 @pytest.mark.unit
