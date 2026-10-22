@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 
@@ -238,8 +239,40 @@ def run_demo(
     return 0
 
 
+def resolve_webhook_secret(explicit_secret: str | None) -> str:
+    """Resolve the webhook secret from CLI, environment, or .env file.
+
+    Args:
+        explicit_secret: Secret passed via command-line argument, if any.
+
+    Returns:
+        Resolved secret string.
+    """
+    if explicit_secret and explicit_secret.strip():
+        return explicit_secret.strip()
+
+    env_val = os.getenv("WEBHOOK_SECRET")
+    if env_val and env_val.strip():
+        return env_val.strip()
+
+    for candidate in (Path(".env"), Path(__file__).resolve().parent.parent / ".env"):
+        if candidate.is_file():
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                trimmed = line.strip()
+                if trimmed.startswith("WEBHOOK_SECRET=") and not trimmed.startswith("#"):
+                    val = trimmed.split("=", 1)[1].strip().strip("\"'")
+                    if val:
+                        return val
+
+    return ""
+
+
 def main() -> None:
     """Parse CLI arguments and launch the conversation demo."""
+    # Ensure stdout handles UTF-8 characters across platforms (including Windows cp1252)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(
         description="Simulate a 7-turn booking conversation against POST /v1/messages.",
     )
@@ -250,8 +283,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--secret",
-        default=os.getenv("WEBHOOK_SECRET", "dev-webhook-secret-change-in-prod"),
-        help="Shared HMAC secret for webhook signature authentication",
+        default=None,
+        help="Shared HMAC secret for webhook authentication (defaults to WEBHOOK_SECRET env var)",
     )
     parser.add_argument(
         "--phone",
@@ -271,9 +304,30 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    secret = resolve_webhook_secret(args.secret)
+
+    if not secret:
+        sys.stderr.write(
+            f"{RED}Error: WEBHOOK_SECRET is not configured.{RESET}\n"
+            "Please generate a 32-byte secret (e.g. python -c "
+            "'import secrets; print(secrets.token_hex(32))'),\n"
+            "set WEBHOOK_SECRET in your environment or .env file, or pass --secret.\n"
+        )
+        sys.exit(1)
+
+    lowered = secret.lower()
+    insecure = any(p in lowered for p in ("change-me", "placeholder", "secret-key", "example"))
+    if insecure or len(secret) < 32:
+        sys.stderr.write(
+            f"{RED}Error: WEBHOOK_SECRET is set to an insecure placeholder "
+            f"or is shorter than 32 characters.{RESET}\n"
+            "Please generate a secure random 32-byte secret before running the demonstration.\n"
+        )
+        sys.exit(1)
+
     exit_code = run_demo(
         base_url=args.base_url,
-        secret=args.secret,
+        secret=secret,
         phone=args.phone,
         delay=args.delay,
         idempotency_check=args.idempotency_check,
