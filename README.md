@@ -24,7 +24,7 @@ Connecting to: http://localhost:8000
 Customer Phone: +5511999998888
 
 --- Turn 1/7 ---------------------------------
-Customer 👤: Olá! Gostaria de agendar um corte para amanhã às 15h.
+Customer 👤: Olá! Gostaria de agendar um corte para sexta-feira, 23/10 às 15h.
              HTTP 200 | Round-trip: 53.5ms
 Bot 💈:     Por favor, qual é o seu nome para o agendamento?
 
@@ -34,32 +34,32 @@ Bot 💈:     Por favor, qual é o seu nome para o agendamento?
 --- Turn 2/7 ---------------------------------
 Customer 👤: Renan Maciel
              HTTP 200 | Round-trip: 91.5ms
-Bot 💈:     Podemos confirmar? Agendamento de Corte de Cabelo em 22/10 às 15:00 com qualquer barbeiro disponível para Renan Maciel. Valor: R$ 45,00. (Responda 'sim' para confirmar ou informe se deseja mudar algo)
+Bot 💈:     Podemos confirmar? Agendamento de Corte de Cabelo em 23/10 às 15:00 com qualquer barbeiro disponível para Renan Maciel. Valor: R$ 45,00. (Responda 'sim' para confirmar ou informe se deseja mudar algo)
 
 --- Turn 3/7 ---------------------------------
 Customer 👤: Sim
              HTTP 200 | Round-trip: 46.3ms
-Bot 💈:     Perfeito, Renan Maciel! Seu horário para Corte de Cabelo está confirmado para 22/10 às 15:00 com Bruno. Te esperamos lá!
+Bot 💈:     Perfeito, Renan Maciel! Seu horário para Corte de Cabelo está confirmado para 23/10 às 15:00 com Bruno. Te esperamos lá!
 
 --- Turn 4/7 ---------------------------------
-Customer 👤: Gostaria de remarcar para sexta-feira às 16h.
+Customer 👤: Gostaria de remarcar para sábado, 24/10 às 16h.
              HTTP 200 | Round-trip: 57.8ms
-Bot 💈:     Podemos confirmar a remarcação de Corte de Cabelo de 22/10 às 15:00 para 23/10 às 16:00?
+Bot 💈:     Podemos confirmar a remarcação de Corte de Cabelo de 23/10 às 15:00 para 24/10 às 16:00?
 
 --- Turn 5/7 ---------------------------------
 Customer 👤: Confirmado
              HTTP 200 | Round-trip: 39.7ms
-Bot 💈:     Seu agendamento foi remarcado com sucesso para 23/10 às 16:00 com Bruno!
+Bot 💈:     Seu agendamento foi remarcado com sucesso para 24/10 às 16:00 com Bruno!
 
 --- Turn 6/7 ---------------------------------
 Customer 👤: Preciso cancelar meu agendamento.
              HTTP 200 | Round-trip: 74.3ms
-Bot 💈:     Deseja realmente cancelar seu agendamento de Corte de Cabelo no dia 23/10 às 16:00 com Bruno?
+Bot 💈:     Deseja realmente cancelar seu agendamento de Corte de Cabelo no dia 24/10 às 16:00 com Bruno?
 
 --- Turn 7/7 ---------------------------------
 Customer 👤: Sim, pode cancelar.
              HTTP 200 | Round-trip: 87.3ms
-Bot 💈:     Seu agendamento de Corte de Cabelo no dia 23/10 às 16:00 foi cancelado com sucesso.
+Bot 💈:     Seu agendamento de Corte de Cabelo no dia 24/10 às 16:00 foi cancelado com sucesso.
 
 All 7 conversation turns completed successfully! 🎉
 ```
@@ -120,7 +120,7 @@ $secret = python -c "import secrets; print(secrets.token_hex(32))"
 *(Native PowerShell variant without Python: `$bytes = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes); $secret = ($bytes | ForEach-Object { "{0:x2}" -f $_ }) -join ''; (Get-Content .env) -replace 'change-me-to-a-secure-random-secret', $secret | Set-Content .env`)*
 
 > [!NOTE]
-> The application validates configuration during startup and refuses to start if `WEBHOOK_SECRET` is left as an insecure placeholder (such as `change-me-to-a-secure-random-secret`, `change-me`, `placeholder`, `secret-key`) or has fewer than 32 characters.
+> The application validates configuration during startup and refuses to start if `WEBHOOK_SECRET` begins with `change-me` (case-insensitive) or has fewer than 32 characters.
 
 ### 2. Build the application image
 ```bash
@@ -138,11 +138,7 @@ docker compose up -d db
 
 ### 4. Run database migrations
 ```bash
-# Using Docker
 docker compose run --rm app alembic upgrade head
-
-# Or locally with uv
-uv run alembic upgrade head
 ```
 
 ### 5. Seed demo data
@@ -158,16 +154,16 @@ Get-Content db/seeds/demo.sql | docker compose exec -T db psql -U booking -d boo
 
 ### 6. Start the API
 ```bash
-# Using Docker
 docker compose up -d app
-
-# Or locally with uv
-uv run uvicorn booking_agent.main:create_app --factory --reload
 ```
 
 Verify application readiness:
 ```bash
+# Unix / macOS
 curl http://localhost:8000/health/ready
+
+# Windows (PowerShell)
+curl.exe http://localhost:8000/health/ready
 # {"status":"ok","checks":{"database":"ok"}}
 ```
 
@@ -177,6 +173,18 @@ The interactive OpenAPI docs are available at <http://localhost:8000/docs>.
 Execute the automated 7-turn conversation simulation with HMAC signature authentication and idempotency verification (the script automatically reads `WEBHOOK_SECRET` from the environment or `.env` file):
 ```bash
 uv run python scripts/demo_conversation.py --idempotency-check
+```
+
+## Local development
+
+Commands executed locally on the host via `uv` (such as running migrations or the API directly) connect to PostgreSQL outside the Docker network. They require `POSTGRES_HOST=localhost` and require `POSTGRES_PORT` to match `POSTGRES_HOST_PORT` from `.env` whenever the host port mapping differs from `5432`:
+
+```bash
+# Apply migrations locally
+uv run alembic upgrade head
+
+# Start API server locally with auto-reload
+uv run uvicorn booking_agent.main:create_app --factory --reload
 ```
 
 ## Tech stack
