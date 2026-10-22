@@ -7,18 +7,20 @@ booking, name elicitation, confirmation, rescheduling, and cancellation.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
 from booking_agent.api.security import compute_signature
-from booking_agent.config import validate_webhook_secret_value
+from booking_agent.config import Settings, validate_webhook_secret_value
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -30,6 +32,86 @@ RED = "\033[31m"
 DIM = "\033[2m"
 
 BANNER_DIVIDER = "=" * 68
+
+# Portuguese weekday names matching FakeIntentParser rules.
+WEEKDAY_NAMES: tuple[str, ...] = (
+    "segunda-feira",
+    "terça-feira",
+    "quarta-feira",
+    "quinta-feira",
+    "sexta-feira",
+    "sábado",
+    "domingo",
+)
+
+# Days of the week when the barbershop is closed (Sunday = 6 in date.weekday()).
+# Source of truth: db/seeds/demo.sql (business hours defined for days 0-5 only).
+CLOSED_WEEKDAYS: frozenset[int] = frozenset({6})
+
+
+def resolve_business_timezone() -> ZoneInfo:
+    """Resolve the business timezone from environment or .env, falling back to Settings default."""
+    env_val = os.getenv("BUSINESS_TIMEZONE")
+    if env_val and env_val.strip():
+        with contextlib.suppress(ZoneInfoNotFoundError):
+            return ZoneInfo(env_val.strip())
+
+    for candidate in (Path(".env"), Path(__file__).resolve().parent.parent / ".env"):
+        if candidate.is_file():
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                trimmed = line.strip()
+                if trimmed.startswith("BUSINESS_TIMEZONE=") and not trimmed.startswith("#"):
+                    val = trimmed.split("=", 1)[1].strip().strip("\"'")
+                    if val:
+                        with contextlib.suppress(ZoneInfoNotFoundError):
+                            return ZoneInfo(val)
+
+    default_tz = str(Settings.model_fields["business_timezone"].default)
+    return ZoneInfo(default_tz)
+
+
+def compute_demo_dates(base_date: date | None = None) -> tuple[date, date]:
+    """Calculate the booking date and reschedule date on valid business days.
+
+    The booking date is the next business day (Monday through Saturday) starting
+    from tomorrow (base_date + 1 day). The reschedule date is the subsequent
+    business day strictly after the booking date.
+
+    Args:
+        base_date: Reference 'today' date. Defaults to current date in business timezone.
+
+    Returns:
+        Tuple of (booking_date, reschedule_date).
+    """
+    if base_date is None:
+        tz = resolve_business_timezone()
+        base_date = datetime.now(tz).date()
+
+    # Find the next business day starting from tomorrow
+    candidate_booking = base_date + timedelta(days=1)
+    while candidate_booking.weekday() in CLOSED_WEEKDAYS:
+        candidate_booking += timedelta(days=1)
+
+    # Reschedule date is the next business day strictly following the booking date
+    candidate_reschedule = candidate_booking + timedelta(days=1)
+    while candidate_reschedule.weekday() in CLOSED_WEEKDAYS:
+        candidate_reschedule += timedelta(days=1)
+
+    return candidate_booking, candidate_reschedule
+
+
+def format_demo_date_phrase(target_date: date) -> str:
+    """Format date phrase with weekday name and explicit date (e.g. 'sexta-feira, 24/10').
+
+    Args:
+        target_date: Calendar date to format.
+
+    Returns:
+        Formatted string combining weekday name and numeric DD/MM.
+    """
+    weekday_str = WEEKDAY_NAMES[target_date.weekday()]
+    date_str = target_date.strftime("%d/%m")
+    return f"{weekday_str}, {date_str}"
 
 
 def print_banner() -> None:
@@ -147,9 +229,13 @@ def run_demo(
     sys.stdout.write(f"Connecting to: {BOLD}{base_url}{RESET}\n")
     sys.stdout.write(f"Customer Phone: {BOLD}{phone}{RESET}\n\n")
 
+    booking_date, reschedule_date = compute_demo_dates()
+    booking_phrase = format_demo_date_phrase(booking_date)
+    reschedule_phrase = format_demo_date_phrase(reschedule_date)
+
     turns = [
         (
-            "Olá! Gostaria de agendar um corte para amanhã às 15h.",
+            f"Olá! Gostaria de agendar um corte para {booking_phrase} às 15h.",
             "Initial booking request with date and time",
         ),
         (
@@ -161,7 +247,7 @@ def run_demo(
             "Confirm the proposed appointment",
         ),
         (
-            "Gostaria de remarcar para sexta-feira às 16h.",
+            f"Gostaria de remarcar para {reschedule_phrase} às 16h.",
             "Reschedule request",
         ),
         (
