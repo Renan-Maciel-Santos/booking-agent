@@ -1545,6 +1545,108 @@ async def test_unavailable_reschedule_alternative_keeps_the_original_appointment
 
 
 @pytest.mark.unit
+async def test_cancel_turned_reschedule_through_unavailable_alternatives() -> None:
+    """Client in cancel confirmation sends unavailable datetime, picks alternative, and confirms.
+
+    Verifies cancel converts into reschedule through alternative offering, exactly 1 appointment
+    remains (rescheduled to the chosen alternative with status confirmed), and the confirmation
+    prompt displayed is for rescheduling.
+    """
+    conv_service, uow_factory, clock, intent_parser, settings, svc_id, barber_id = (
+        _create_unit_fixtures()
+    )
+    phone = "+5511999996001"
+    other_phone = "+5511999996002"
+    tomorrow_date = clock.now().date() + timedelta(days=1)
+    business_tz = ZoneInfo(settings.business_timezone)
+    initial_start_dt = localize_datetime(tomorrow_date, time(10, 0), business_tz)
+    occupied_dt = localize_datetime(tomorrow_date, time(15, 0), business_tz)
+
+    async with uow_factory() as uow:
+        cust = await uow.customers.create(name="Cliente Cancel to Alt", phone=phone)
+        other_cust = await uow.customers.create(name="Outro Cliente", phone=other_phone)
+        # Client's original confirmed appointment at 10:00
+        appt = await uow.appointments.create(
+            customer_id=cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=initial_start_dt,
+            ends_at=initial_start_dt + timedelta(minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+        # Occupied slot by another client at 15:00
+        await uow.appointments.create(
+            customer_id=other_cust.id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=occupied_dt,
+            ends_at=occupied_dt + timedelta(minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED,
+        )
+
+    # Turn 1: Client enters cancel confirmation
+    intent_parser._responses["quero cancelar"] = BookingIntent(
+        intent=IntentType.CANCEL,
+    )
+    resp1 = await conv_service.handle_message(
+        message_id="msg_cancel_alt_1",
+        phone=phone,
+        text="quero cancelar",
+    )
+    assert resp1 is not None
+    assert "Deseja realmente cancelar seu agendamento" in resp1
+
+    # Turn 2: Client changes mind and sends new date/time that is occupied
+    intent_parser._responses["melhor amanhã às 15h"] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        local_date=tomorrow_date,
+        local_time=time(15, 0),
+    )
+    resp2 = await conv_service.handle_message(
+        message_id="msg_cancel_alt_2",
+        phone=phone,
+        text="melhor amanhã às 15h",
+    )
+    assert resp2 is not None
+    assert "já está ocupado" in resp2
+    assert "Temos estes horários disponíveis" in resp2
+
+    # Turn 3: Client chooses alternative 1
+    resp3 = await conv_service.handle_message(
+        message_id="msg_cancel_alt_3",
+        phone=phone,
+        text="1",
+    )
+    assert resp3 is not None
+    assert "Podemos confirmar a remarcação" in resp3
+    assert "Deseja realmente cancelar" not in resp3
+    assert "Agendamento de" not in resp3
+
+    # Turn 4: Client confirms with "sim"
+    resp4 = await conv_service.handle_message(
+        message_id="msg_cancel_alt_4",
+        phone=phone,
+        text="sim",
+    )
+    assert resp4 is not None
+    assert "remarcado com sucesso" in resp4
+
+    # Database verification
+    async with uow_factory() as uow:
+        all_appts = await uow.appointments.list_by_customer(cust.id)
+        appt_final = await uow.appointments.get_by_id(appt.id)
+
+    assert len(all_appts) == 1
+    assert appt_final is not None
+    assert appt_final.id == appt.id
+    assert appt_final.status == AppointmentStatus.CONFIRMED.value
+    assert appt_final.starts_at != initial_start_dt
+    assert appt_final.starts_at != occupied_dt
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("flow", "expected_template_fragment"),
     [
