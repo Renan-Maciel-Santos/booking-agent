@@ -69,7 +69,7 @@ class Settings(BaseSettings):
             "Generate a secure secret with: "
             'python -c "import secrets; print(secrets.token_hex(32))"'
         )
-        if secret_value.startswith("change-me"):
+        if secret_value.lower().startswith("change-me"):
             raise ValueError(
                 "WEBHOOK_SECRET must not use an example placeholder starting with 'change-me'. "
                 f"{suggestion}"
