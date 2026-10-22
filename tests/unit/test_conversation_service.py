@@ -1611,9 +1611,12 @@ def test_enter_confirmation_with_explicit_typed_details() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("flow", [ConversationFlow.RESCHEDULE, ConversationFlow.CANCEL])
-@pytest.mark.parametrize("reason", ["missing_id", "not_found", "not_confirmed", "not_owned"])
+@pytest.mark.parametrize(
+    "reason", ["missing_id", "invalid_id", "not_found", "not_confirmed", "not_owned"]
+)
 async def test_invalid_reschedule_origin_fails_safe_to_idle(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     flow: ConversationFlow,
     reason: str,
 ) -> None:
@@ -1655,6 +1658,8 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
 
     if reason == "missing_id":
         pass
+    elif reason == "invalid_id":
+        slots["appointment_id"] = "not-a-valid-uuid"
     elif reason == "not_found":
         slots["appointment_id"] = str(uuid.uuid4())
     elif reason == "not_confirmed":
@@ -1707,11 +1712,12 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
         local_time=time(16, 0),
     )
 
-    resp = await conv_service.handle_message(
-        message_id="msg_test_invalid_origin",
-        phone=phone,
-        text="melhor às 16h",
-    )
+    with caplog.at_level(logging.ERROR):
+        resp = await conv_service.handle_message(
+            message_id="msg_test_invalid_origin",
+            phone=phone,
+            text="melhor às 16h",
+        )
 
     assert resp == render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND)
     assert "Não consegui localizar esse agendamento" in resp
@@ -1726,6 +1732,16 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
     mock_reschedule.assert_not_called()
     mock_cancel.assert_not_called()
     assert len(uow_factory.store.booking_actions) == 0
+
+    error_logs = [
+        rec
+        for rec in caplog.records
+        if rec.levelno == logging.ERROR
+        and getattr(rec, "event", None) == "invalid_reschedule_origin"
+    ]
+    assert len(error_logs) == 1
+    assert getattr(error_logs[0], "reason", None) == reason
+    assert getattr(error_logs[0], "phone_last4", None) == mask_phone(phone)
 
 
 @pytest.mark.unit

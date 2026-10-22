@@ -544,64 +544,40 @@ class ConversationService:
             The confirmed Appointment if valid, None on any failure.
         """
         masked_phone = mask_phone(phone)
-        raw_id = slots.get("appointment_id")
-        if not raw_id:
+
+        def _reject(reason: str) -> None:
             logger.error(
                 "invalid_reschedule_origin",
                 extra={
                     "event": "invalid_reschedule_origin",
-                    "reason": "missing_id",
+                    "reason": reason,
                     "phone_last4": masked_phone,
                 },
             )
+
+        raw_id = slots.get("appointment_id")
+        if not raw_id:
+            _reject("missing_id")
             return None
 
         try:
             aid = uuid.UUID(str(raw_id))
         except (ValueError, AttributeError):
-            logger.error(
-                "invalid_reschedule_origin",
-                extra={
-                    "event": "invalid_reschedule_origin",
-                    "reason": "missing_id",
-                    "phone_last4": masked_phone,
-                },
-            )
+            _reject("invalid_id")
             return None
 
         appt = await uow.appointments.get_by_id(aid)
         if appt is None:
-            logger.error(
-                "invalid_reschedule_origin",
-                extra={
-                    "event": "invalid_reschedule_origin",
-                    "reason": "not_found",
-                    "phone_last4": masked_phone,
-                },
-            )
+            _reject("not_found")
             return None
 
         if appt.status != AppointmentStatus.CONFIRMED.value:
-            logger.error(
-                "invalid_reschedule_origin",
-                extra={
-                    "event": "invalid_reschedule_origin",
-                    "reason": "not_confirmed",
-                    "phone_last4": masked_phone,
-                },
-            )
+            _reject("not_confirmed")
             return None
 
         customer = await uow.customers.get_by_phone(phone)
         if customer is None or appt.customer_id != customer.id:
-            logger.error(
-                "invalid_reschedule_origin",
-                extra={
-                    "event": "invalid_reschedule_origin",
-                    "reason": "not_owned",
-                    "phone_last4": masked_phone,
-                },
-            )
+            _reject("not_owned")
             return None
 
         if "service_id" not in slots:
