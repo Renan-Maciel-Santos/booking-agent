@@ -61,16 +61,20 @@ is written in **English**.
 - Never swallow errors from external services: propagate and handle them explicitly.
 - No test-specific logic or bypasses inside production code.
 - Never commit agent log files, status files, scratch files, or session artifacts to the repository.
-- Test what you configure: if a rule says something fails or succeeds, prove both branches in tests.
-- When a command depends on an external service (e.g. database, container), verify the dependency is actually up before running the command, and report clearly if it is down.
-- For sequential multi-step tasks, run verifications between steps, not only at the end.
-- When a review cycle concludes, review whether new process or quality rules emerged from the discussion and record them in AGENTS.md.
-- Every CLI command or code snippet in documentation must be proven against the actual code. Never write commands from memory.
-- Before fixing an issue, write or point to an explicit reproducer. A fix without a proven failure mode is incomplete.
-- When a proposed fix touches more files than the issue description allows, stop and discuss before touching them.
-- Prefer adding an explicit CLI flag or configuration option over modifying global defaults when supporting alternative modes.
-- The permitted file list for a task is strict. If you need to touch a file outside it, stop and ask.
-- When testing time-dependent logic, inject a Clock; never rely on real-time sleep or the host clock.
+- Documentation PRs never change product behavior. If a behavior change becomes necessary during a documentation task, stop and ask for approval.
+- Never fabricate defaults for missing or malformed required data. Fail safe: log a structured event, reset to a neutral state, reply neutrally, and execute nothing.
+- Every validation rule has a single source of truth. Scripts reuse it; documentation describes it exactly as implemented.
+- No personal data in logs: mask phone numbers (`phone_last4`) and never log message text or customer names.
+- Conversation tests drive the dialogue through the final confirmation and assert the resulting database state, not only the current turn.
+- Test names describe the guaranteed behavior, never prompt steps or scenario labels.
+- Every rule is tested on both sides: what it accepts and what it rejects.
+- Before fixing a bug, write a reproducer that fails without the fix.
+- Demos and tests must not depend on the day or time they run; inject a clock for time-dependent logic.
+- Commands in documentation are executed before being committed. The Quick Start is verified from a truly clean environment (`docker compose down -v --rmi local`, no `.env`), copying commands literally from the README.
+- The permitted file list for a task is strict. If a file outside it must change, stop and ask.
+- Merge strategy: rebase when every commit is clean and meaningful; squash when the PR history contains corrections of its own commits.
+- Changes to AGENTS.md are proposed in a pull request with the exact text and merged only after human review. Never add, remove, or reword rules on your own initiative.
+- Delivery reports state only what was verified: every number and claim comes from command output shown in the report. The Deviations section covers only the current delivery.
 
 ## Agent skills
 
