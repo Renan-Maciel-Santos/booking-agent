@@ -991,7 +991,7 @@ async def test_awaiting_confirmation_missing_flow_fails_safe_and_logs_error(
         for rec in caplog.records
         if rec.levelno == logging.ERROR and getattr(rec, "event", None) == "missing_pending_flow"
     ]
-    assert getattr(error_logs[0], "conversation_id", None) == mask_phone(phone)
+    assert getattr(error_logs[0], "phone_last4", None) == mask_phone(phone)
     assert not hasattr(error_logs[0], "phone")
     assert getattr(error_logs[0], "stage", None) == ConversationStage.AWAITING_CONFIRMATION.value
 

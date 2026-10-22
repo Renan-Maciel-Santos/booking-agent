@@ -387,7 +387,7 @@ class ConversationService:
                 "Missing pending flow in state slots for conversation",
                 extra={
                     "event": "missing_pending_flow",
-                    "conversation_id": masked_phone,
+                    "phone_last4": masked_phone,
                     "stage": stage,
                 },
             )
@@ -401,7 +401,7 @@ class ConversationService:
                 raw_flow,
                 extra={
                     "event": "missing_pending_flow",
-                    "conversation_id": masked_phone,
+                    "phone_last4": masked_phone,
                     "stage": stage,
                 },
             )
