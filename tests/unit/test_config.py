@@ -199,6 +199,16 @@ def test_webhook_secret_change_me_prefix_rejected() -> None:
 
     assert "change-me-123" not in str(exc_info.value)
 
+    # Mixed-case prefix with 40 additional characters must also be rejected
+    case_variant = "Change-Me-" + "a" * 40
+    with pytest.raises(
+        ValidationError,
+        match=r"WEBHOOK_SECRET must not use an example placeholder starting with 'change-me'",
+    ) as exc_info_case:
+        build_test_settings(webhook_secret=SecretStr(case_variant))
+
+    assert case_variant not in str(exc_info_case.value)
+
 
 def test_webhook_secret_length_validation() -> None:
     from pydantic import SecretStr, ValidationError
