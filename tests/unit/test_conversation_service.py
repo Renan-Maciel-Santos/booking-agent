@@ -4,12 +4,13 @@ import logging
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from booking_agent.config import Settings
+from booking_agent.database.models import Appointment, Customer
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
 from booking_agent.domain.enums import (
     AppointmentStatus,
@@ -1574,3 +1575,122 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
     assert out_slots.get("flow") == flow.value
     assert "action_id" in out_slots
     assert expected_template_fragment in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("flow", [ConversationFlow.RESCHEDULE, ConversationFlow.CANCEL])
+@pytest.mark.parametrize("reason", ["missing_id", "not_found", "not_confirmed", "not_owned"])
+async def test_invalid_reschedule_origin_fails_safe_to_idle(
+    monkeypatch: pytest.MonkeyPatch,
+    flow: ConversationFlow,
+    reason: str,
+) -> None:
+    """Parametric test verifying that any invalid reschedule origin in RESCHEDULE
+    and CANCEL flows fails safe to IDLE, clears slots, renders a neutral message,
+    and executes no mutations.
+    """
+    conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999990001"
+    now_utc = clock.now()
+    now_dt = now_utc + timedelta(days=2)
+
+    cust_id = uuid.uuid4()
+    uow_factory.store.customers[cust_id] = Customer(
+        id=cust_id,
+        phone=phone,
+        name="Cliente Origem",
+        created_at=now_utc,
+        updated_at=now_utc,
+    )
+
+    other_cust_id = uuid.uuid4()
+    uow_factory.store.customers[other_cust_id] = Customer(
+        id=other_cust_id,
+        phone="+5511999990002",
+        name="Outro Cliente",
+        created_at=now_utc,
+        updated_at=now_utc,
+    )
+
+    slots: dict[str, Any] = {
+        "flow": flow.value,
+        "action_id": str(uuid.uuid4()),
+        "service_id": str(svc_id),
+        "barber_id": str(barber_id),
+        "local_date": now_dt.date().isoformat(),
+        "local_time": "14:00:00",
+    }
+
+    if reason == "missing_id":
+        pass
+    elif reason == "not_found":
+        slots["appointment_id"] = str(uuid.uuid4())
+    elif reason == "not_confirmed":
+        appt_cancelled_id = uuid.uuid4()
+        uow_factory.store.appointments[appt_cancelled_id] = Appointment(
+            id=appt_cancelled_id,
+            customer_id=cust_id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=now_dt,
+            ends_at=now_dt + timedelta(minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CANCELLED.value,
+            created_at=now_utc,
+            updated_at=now_utc,
+        )
+        slots["appointment_id"] = str(appt_cancelled_id)
+    elif reason == "not_owned":
+        appt_other_id = uuid.uuid4()
+        uow_factory.store.appointments[appt_other_id] = Appointment(
+            id=appt_other_id,
+            customer_id=other_cust_id,
+            service_id=svc_id,
+            barber_id=barber_id,
+            starts_at=now_dt,
+            ends_at=now_dt + timedelta(minutes=30),
+            price_cents=4500,
+            status=AppointmentStatus.CONFIRMED.value,
+            created_at=now_utc,
+            updated_at=now_utc,
+        )
+        slots["appointment_id"] = str(appt_other_id)
+
+    async with uow_factory() as uow:
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.AWAITING_CONFIRMATION.value,
+            slots=slots,
+        )
+
+    mock_book = AsyncMock()
+    mock_reschedule = AsyncMock()
+    mock_cancel = AsyncMock()
+    monkeypatch.setattr(conv_service._booking_service, "book", mock_book)
+    monkeypatch.setattr(conv_service._booking_service, "reschedule", mock_reschedule)
+    monkeypatch.setattr(conv_service._booking_service, "cancel", mock_cancel)
+
+    intent_parser._responses["melhor às 16h"] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        local_time=time(16, 0),
+    )
+
+    resp = await conv_service.handle_message(
+        message_id="msg_test_invalid_origin",
+        phone=phone,
+        text="melhor às 16h",
+    )
+
+    assert resp == render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND)
+    assert "Não consegui localizar esse agendamento" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.IDLE.value
+        assert st.slots == {}
+
+    mock_book.assert_not_called()
+    mock_reschedule.assert_not_called()
+    mock_cancel.assert_not_called()
+    assert len(uow_factory.store.booking_actions) == 0

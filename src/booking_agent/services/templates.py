@@ -60,6 +60,7 @@ class TemplateKey(StrEnum):
     REQUEST_PROCESSING = "request_processing"
     NO_SLOTS_AVAILABLE = "no_slots_available"
     ASK_RESCHEDULE_DATETIME = "ask_reschedule_datetime"
+    RESCHEDULE_ORIGIN_NOT_FOUND = "reschedule_origin_not_found"
 
 
 _TEMPLATES: dict[TemplateKey, str] = {
@@ -146,6 +147,10 @@ _TEMPLATES: dict[TemplateKey, str] = {
     ),
     TemplateKey.ASK_RESCHEDULE_DATETIME: (
         "Para qual dia e horário você gostaria de remarcar seu agendamento?"
+    ),
+    TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND: (
+        "Não consegui localizar esse agendamento. "
+        "Pode me dizer de novo o que você gostaria de fazer?"
     ),
 }
 

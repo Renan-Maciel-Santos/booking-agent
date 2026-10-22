@@ -11,6 +11,7 @@ from typing import Any, assert_never
 from zoneinfo import ZoneInfo
 
 from booking_agent.config import Settings
+from booking_agent.database.models import Appointment
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
 from booking_agent.domain.enums import (
     AppointmentStatus,
@@ -409,6 +410,100 @@ class ConversationService:
 
     # Backward compatibility alias
     _get_required_flow = _extract_pending_flow
+
+    async def _load_reschedule_origin(
+        self,
+        uow: UnitOfWork,
+        phone: str,
+        slots: dict[str, Any],
+    ) -> Appointment | None:
+        """Validate and load the confirmed origin appointment for rescheduling.
+
+        Ensures appointment_id is present and a valid UUID, the appointment exists,
+        is confirmed, and belongs to the customer of this phone number.
+        Populates service_id, barber_id, and old_date_time in slots.
+
+        Args:
+            uow: Active unit of work.
+            phone: Customer phone number.
+            slots: State slots dictionary.
+
+        Returns:
+            The confirmed Appointment if valid, None on any failure.
+        """
+        masked_phone = mask_phone(phone)
+        raw_id = slots.get("appointment_id")
+        if not raw_id:
+            logger.error(
+                "invalid_reschedule_origin",
+                extra={
+                    "event": "invalid_reschedule_origin",
+                    "reason": "missing_id",
+                    "phone_last4": masked_phone,
+                },
+            )
+            return None
+
+        try:
+            aid = uuid.UUID(str(raw_id))
+        except (ValueError, AttributeError):
+            logger.error(
+                "invalid_reschedule_origin",
+                extra={
+                    "event": "invalid_reschedule_origin",
+                    "reason": "missing_id",
+                    "phone_last4": masked_phone,
+                },
+            )
+            return None
+
+        appt = await uow.appointments.get_by_id(aid)
+        if appt is None:
+            logger.error(
+                "invalid_reschedule_origin",
+                extra={
+                    "event": "invalid_reschedule_origin",
+                    "reason": "not_found",
+                    "phone_last4": masked_phone,
+                },
+            )
+            return None
+
+        if appt.status != AppointmentStatus.CONFIRMED.value:
+            logger.error(
+                "invalid_reschedule_origin",
+                extra={
+                    "event": "invalid_reschedule_origin",
+                    "reason": "not_confirmed",
+                    "phone_last4": masked_phone,
+                },
+            )
+            return None
+
+        customer = await uow.customers.get_by_phone(phone)
+        if customer is None or appt.customer_id != customer.id:
+            logger.error(
+                "invalid_reschedule_origin",
+                extra={
+                    "event": "invalid_reschedule_origin",
+                    "reason": "not_owned",
+                    "phone_last4": masked_phone,
+                },
+            )
+            return None
+
+        if "service_id" not in slots:
+            slots["service_id"] = str(appt.service_id)
+        if "barber_id" not in slots:
+            slots["barber_id"] = str(appt.barber_id)
+        if "old_date_time" not in slots:
+            start_local = appt.starts_at.astimezone(self._business_tz)
+            slots["old_date_time"] = (
+                f"{format_short_date_pt_br(start_local.date())} às "
+                f"{format_time_pt_br(start_local.time())}"
+            )
+
+        return appt
 
     async def handle_message(self, message_id: str, phone: str, text: str) -> str:
         """Process an incoming chat message and return response text for user."""
@@ -1134,39 +1229,26 @@ class ConversationService:
                                 uow, phone, slots, flow=ConversationFlow.BOOK
                             )
                         case ConversationFlow.RESCHEDULE:
-                            if "appointment_id" in slots:
-                                aid = uuid.UUID(slots["appointment_id"])
-                                appt = await uow.appointments.get_by_id(aid)
-                                if appt:
-                                    if "service_id" not in slots:
-                                        slots["service_id"] = str(appt.service_id)
-                                    if "barber_id" not in slots:
-                                        slots["barber_id"] = str(appt.barber_id)
-                                    if "old_date_time" not in slots:
-                                        start_local = appt.starts_at.astimezone(self._business_tz)
-                                        slots["old_date_time"] = (
-                                            f"{format_short_date_pt_br(start_local.date())} às "
-                                            f"{format_time_pt_br(start_local.time())}"
-                                        )
+                            origin = await self._load_reschedule_origin(uow, phone, slots)
+                            if origin is None:
+                                slots.clear()
+                                return (
+                                    ConversationStage.IDLE.value,
+                                    slots,
+                                    render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND),
+                                )
                             return await self._validate_booking_slots_and_confirm(
                                 uow, phone, slots, flow=ConversationFlow.RESCHEDULE
                             )
                         case ConversationFlow.CANCEL:
-                            slots["flow"] = ConversationFlow.RESCHEDULE.value
-                            if "appointment_id" in slots:
-                                aid = uuid.UUID(slots["appointment_id"])
-                                appt = await uow.appointments.get_by_id(aid)
-                                if appt:
-                                    if "service_id" not in slots:
-                                        slots["service_id"] = str(appt.service_id)
-                                    if "barber_id" not in slots:
-                                        slots["barber_id"] = str(appt.barber_id)
-                                    if "old_date_time" not in slots:
-                                        start_local = appt.starts_at.astimezone(self._business_tz)
-                                        slots["old_date_time"] = (
-                                            f"{format_short_date_pt_br(start_local.date())} às "
-                                            f"{format_time_pt_br(start_local.time())}"
-                                        )
+                            origin = await self._load_reschedule_origin(uow, phone, slots)
+                            if origin is None:
+                                slots.clear()
+                                return (
+                                    ConversationStage.IDLE.value,
+                                    slots,
+                                    render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND),
+                                )
                             return await self._validate_booking_slots_and_confirm(
                                 uow, phone, slots, flow=ConversationFlow.RESCHEDULE
                             )
@@ -1435,6 +1517,7 @@ class ConversationService:
         flow: ConversationFlow = ConversationFlow.BOOK,
     ) -> tuple[str, dict[str, Any], str]:
         """Validate availability for collected slots and produce confirmation prompt."""
+        slots["flow"] = flow.value
         service_id = uuid.UUID(slots["service_id"])
         target_date = date.fromisoformat(slots["local_date"])
         target_time = time.fromisoformat(slots["local_time"])
