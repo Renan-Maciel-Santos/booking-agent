@@ -956,11 +956,21 @@ class ConversationService:
 
                 service = await uow.services.get_by_id(appt.service_id)
                 barber = await uow.barbers.get_by_id(appt.barber_id)
+                cust = await uow.customers.get_by_id(appt.customer_id)
+                slots["service_id"] = str(appt.service_id)
+                slots["barber_id"] = str(appt.barber_id)
                 slots["service_name"] = service.name if service else "Corte"
                 slots["barber_name"] = barber.name if barber else "Barbeiro"
+                if cust:
+                    slots["customer_name"] = cust.name
                 local_start = appt.starts_at.astimezone(self._business_tz)
                 slots["local_date"] = local_start.date().isoformat()
                 slots["local_time"] = local_start.time().isoformat()
+                old_dt_str = (
+                    f"{format_short_date_pt_br(local_start.date())} às "
+                    f"{format_time_pt_br(local_start.time())}"
+                )
+                slots["old_date_time"] = old_dt_str
 
                 if flow == ConversationFlow.CANCEL:
                     return self._enter_confirmation(
@@ -1047,7 +1057,7 @@ class ConversationService:
                 if intent.local_time:
                     slots["local_time"] = intent.local_time.isoformat()
                 slots.pop("alternative_slots", None)
-                return await self._validate_booking_slots_and_confirm(uow, phone, slots)
+                return await self._validate_booking_slots_and_confirm(uow, phone, slots, flow=flow)
 
             return (
                 ConversationStage.OFFERING_ALTERNATIVES.value,
@@ -1118,7 +1128,50 @@ class ConversationService:
                 if has_updates:
                     # Invalidate previous action_id with fresh uuid
                     slots.pop("action_id", None)
-                    return await self._validate_booking_slots_and_confirm(uow, phone, slots)
+                    match pending_flow:
+                        case ConversationFlow.BOOK:
+                            return await self._validate_booking_slots_and_confirm(
+                                uow, phone, slots, flow=ConversationFlow.BOOK
+                            )
+                        case ConversationFlow.RESCHEDULE:
+                            if "appointment_id" in slots:
+                                aid = uuid.UUID(slots["appointment_id"])
+                                appt = await uow.appointments.get_by_id(aid)
+                                if appt:
+                                    if "service_id" not in slots:
+                                        slots["service_id"] = str(appt.service_id)
+                                    if "barber_id" not in slots:
+                                        slots["barber_id"] = str(appt.barber_id)
+                                    if "old_date_time" not in slots:
+                                        start_local = appt.starts_at.astimezone(self._business_tz)
+                                        slots["old_date_time"] = (
+                                            f"{format_short_date_pt_br(start_local.date())} às "
+                                            f"{format_time_pt_br(start_local.time())}"
+                                        )
+                            return await self._validate_booking_slots_and_confirm(
+                                uow, phone, slots, flow=ConversationFlow.RESCHEDULE
+                            )
+                        case ConversationFlow.CANCEL:
+                            slots["flow"] = ConversationFlow.RESCHEDULE.value
+                            if "appointment_id" in slots:
+                                aid = uuid.UUID(slots["appointment_id"])
+                                appt = await uow.appointments.get_by_id(aid)
+                                if appt:
+                                    if "service_id" not in slots:
+                                        slots["service_id"] = str(appt.service_id)
+                                    if "barber_id" not in slots:
+                                        slots["barber_id"] = str(appt.barber_id)
+                                    if "old_date_time" not in slots:
+                                        start_local = appt.starts_at.astimezone(self._business_tz)
+                                        slots["old_date_time"] = (
+                                            f"{format_short_date_pt_br(start_local.date())} às "
+                                            f"{format_time_pt_br(start_local.time())}"
+                                        )
+                            return await self._validate_booking_slots_and_confirm(
+                                uow, phone, slots, flow=ConversationFlow.RESCHEDULE
+                            )
+                        case _ as unreachable:
+                            assert_never(unreachable)
 
             # Re-present confirmation prompt if user input was unclear
             if pending_flow == ConversationFlow.BOOK:
@@ -1182,11 +1235,19 @@ class ConversationService:
                     slots["appointment_id"] = str(target_appt.id)
                     service = await uow.services.get_by_id(target_appt.service_id)
                     barber = await uow.barbers.get_by_id(target_appt.barber_id)
+                    slots["service_id"] = str(target_appt.service_id)
+                    slots["barber_id"] = str(target_appt.barber_id)
                     slots["service_name"] = service.name if service else "Corte"
                     slots["barber_name"] = barber.name if barber else "Barbeiro"
+                    slots["customer_name"] = customer.name
                     start_local = target_appt.starts_at.astimezone(self._business_tz)
                     slots["local_date"] = start_local.date().isoformat()
                     slots["local_time"] = start_local.time().isoformat()
+                    old_dt_str = (
+                        f"{format_short_date_pt_br(start_local.date())} às "
+                        f"{format_time_pt_br(start_local.time())}"
+                    )
+                    slots["old_date_time"] = old_dt_str
 
                     if flow == ConversationFlow.CANCEL:
                         return self._enter_confirmation(
@@ -1197,11 +1258,6 @@ class ConversationService:
                         if intent.local_date and intent.local_time:
                             slots["local_date"] = intent.local_date.isoformat()
                             slots["local_time"] = intent.local_time.isoformat()
-                            old_dt_str = (
-                                f"{format_short_date_pt_br(start_local.date())} às "
-                                f"{format_time_pt_br(start_local.time())}"
-                            )
-                            slots["old_date_time"] = old_dt_str
                             return self._enter_confirmation(
                                 flow=ConversationFlow.RESCHEDULE,
                                 slots=slots,

@@ -77,7 +77,16 @@ class FakeIntentParser:
         if any(word in lower for word in ["cancelar", "cancela", "desmarcar", "cancel"]):
             intent = IntentType.CANCEL
         elif any(
-            word in lower for word in ["remarcar", "remarca", "mudar", "trocar", "reschedule"]
+            word in lower
+            for word in [
+                "remarcar",
+                "remarca",
+                "mudar",
+                "trocar",
+                "reschedule",
+                "melhor",
+                "prefiro",
+            ]
         ):
             intent = IntentType.RESCHEDULE
         elif any(
