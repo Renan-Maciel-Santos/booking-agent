@@ -20,7 +20,11 @@ from booking_agent.domain.enums import (
     ConversationStage,
     MessageStatus,
 )
-from booking_agent.domain.errors import LLMInvalidOutputError, SlotUnavailableError
+from booking_agent.domain.errors import (
+    LLMInvalidOutputError,
+    MissingConfirmationDataError,
+    SlotUnavailableError,
+)
 from booking_agent.domain.ports import (
     Clock,
     IntentParser,
@@ -77,42 +81,88 @@ class ConfirmationDetails:
     service: str
     date: str
     time: str
+    name: str
+    price: str
+    old_date_time: str | None = None
     barber: str = "qualquer barbeiro disponível"
-    name: str = "Cliente"
-    price: str = "R$ 0,00"
-    old_date_time: str = "horário anterior"
 
     @classmethod
     def from_slots(
         cls,
         slots: dict[str, Any],
         business_tz: ZoneInfo,
-        *,
-        old_date_time: str | None = None,
-        service: str | None = None,
-        date_str: str | None = None,
-        time_str: str | None = None,
-        barber: str | None = None,
-        name: str | None = None,
-        price: str | None = None,
     ) -> "ConfirmationDetails":
-        """Build ConfirmationDetails from conversation slots with fallback defaults."""
-        target_date = date.fromisoformat(slots["local_date"]) if "local_date" in slots else None
-        target_time = time.fromisoformat(slots["local_time"]) if "local_time" in slots else None
-        formatted_date = format_short_date_pt_br(target_date) if target_date else ""
-        formatted_time = format_time_pt_br(target_time) if target_time else ""
-        price_cents = slots.get("service_price_cents", 0)
+        """Build ConfirmationDetails from conversation slots, validating mandatory fields."""
+        missing: list[str] = []
 
-        resolved_old_dt = old_date_time or slots.get("old_date_time", "horário anterior")
+        service_val = slots.get("service_name") or slots.get("service")
+        if not service_val:
+            missing.append("service")
+
+        raw_date = slots.get("local_date") or slots.get("date")
+        formatted_date: str | None = None
+        if not raw_date:
+            missing.append("date")
+        elif isinstance(raw_date, date):
+            formatted_date = format_short_date_pt_br(raw_date)
+        elif isinstance(raw_date, str):
+            try:
+                formatted_date = format_short_date_pt_br(date.fromisoformat(raw_date))
+            except ValueError:
+                formatted_date = raw_date
+        else:
+            missing.append("date")
+
+        raw_time = slots.get("local_time") or slots.get("time")
+        formatted_time: str | None = None
+        if not raw_time:
+            missing.append("time")
+        elif isinstance(raw_time, time):
+            formatted_time = format_time_pt_br(raw_time)
+        elif isinstance(raw_time, str):
+            try:
+                formatted_time = format_time_pt_br(time.fromisoformat(raw_time))
+            except ValueError:
+                formatted_time = raw_time
+        else:
+            missing.append("time")
+
+        name_val = slots.get("customer_name") or slots.get("name")
+        if not name_val:
+            missing.append("name")
+
+        raw_price = slots.get("service_price_cents")
+        formatted_price: str | None = None
+        if raw_price is not None and isinstance(raw_price, int):
+            formatted_price = format_currency_brl(raw_price)
+        elif slots.get("price") is not None:
+            formatted_price = str(slots["price"])
+        else:
+            missing.append("price")
+
+        if (
+            missing
+            or service_val is None
+            or formatted_date is None
+            or formatted_time is None
+            or name_val is None
+            or formatted_price is None
+        ):
+            raise MissingConfirmationDataError(tuple(missing))
+
+        barber_val = (
+            slots.get("barber_name") or slots.get("barber") or "qualquer barbeiro disponível"
+        )
+        old_dt_val = slots.get("old_date_time")
 
         return cls(
-            service=service or slots.get("service_name", "Corte"),
-            date=date_str or formatted_date,
-            time=time_str or formatted_time,
-            barber=barber or slots.get("barber_name") or "qualquer barbeiro disponível",
-            name=name or slots.get("customer_name", "Cliente"),
-            price=price or format_currency_brl(price_cents),
-            old_date_time=resolved_old_dt,
+            service=str(service_val),
+            date=formatted_date,
+            time=formatted_time,
+            name=str(name_val),
+            price=formatted_price,
+            old_date_time=str(old_dt_val) if old_dt_val is not None else None,
+            barber=str(barber_val),
         )
 
 
@@ -343,7 +393,7 @@ class ConversationService:
         self,
         flow: ConversationFlow,
         slots: dict[str, Any],
-        details: ConfirmationDetails | None = None,
+        details: ConfirmationDetails,
     ) -> tuple[str, dict[str, Any], str]:
         """Single entry point for transitioning the conversation into AWAITING_CONFIRMATION.
 
@@ -353,17 +403,20 @@ class ConversationService:
         Args:
             flow: Active ConversationFlow member.
             slots: Slot dictionary to persist with the flow and action_id.
-            details: Typed details for template rendering (extracted from slots if omitted).
+            details: Mandatory typed details for template rendering.
 
         Returns:
             Tuple of (stage, slots, confirmation_prompt).
+
+        Raises:
+            MissingConfirmationDataError: If old_date_time is missing for RESCHEDULE flow.
         """
+        if flow == ConversationFlow.RESCHEDULE and not details.old_date_time:
+            raise MissingConfirmationDataError(("old_date_time",))
+
         slots["action_id"] = str(uuid.uuid4())
         slots["flow"] = flow.value
         slots.pop("awaiting", None)
-
-        if details is None:
-            details = ConfirmationDetails.from_slots(slots, self._business_tz)
 
         match flow:
             case ConversationFlow.BOOK:
@@ -377,6 +430,8 @@ class ConversationService:
                     price=details.price,
                 )
             case ConversationFlow.RESCHEDULE:
+                if not details.old_date_time:
+                    raise MissingConfirmationDataError(("old_date_time",))
                 prompt = render_template(
                     TemplateKey.CONFIRM_RESCHEDULE,
                     service=details.service,
@@ -396,6 +451,28 @@ class ConversationService:
                 assert_never(unreachable)
 
         return ConversationStage.AWAITING_CONFIRMATION.value, slots, prompt
+
+    def _handle_missing_confirmation_data(
+        self,
+        phone: str,
+        slots: dict[str, Any],
+        error: MissingConfirmationDataError,
+    ) -> tuple[str, dict[str, Any], str]:
+        """Handle missing confirmation details: log event without PII and fail safe to IDLE."""
+        logger.error(
+            "missing_confirmation_data",
+            extra={
+                "event": "missing_confirmation_data",
+                "missing_fields": error.missing_fields,
+                "phone_last4": mask_phone(phone),
+            },
+        )
+        slots.clear()
+        return (
+            ConversationStage.IDLE.value,
+            slots,
+            render_template(TemplateKey.CONFIRMATION_DATA_UNAVAILABLE),
+        )
 
     def _extract_pending_flow(
         self,
@@ -531,6 +608,17 @@ class ConversationService:
             slots["service_id"] = str(appt.service_id)
         if "barber_id" not in slots:
             slots["barber_id"] = str(appt.barber_id)
+        if "service_name" not in slots or "service_price_cents" not in slots:
+            svc = await uow.services.get_by_id(appt.service_id)
+            if svc:
+                slots.setdefault("service_name", svc.name)
+                slots.setdefault("service_price_cents", svc.price_cents)
+        if "barber_name" not in slots:
+            brb = await uow.barbers.get_by_id(appt.barber_id)
+            if brb:
+                slots["barber_name"] = brb.name
+        if "customer_name" not in slots and customer:
+            slots["customer_name"] = customer.name
         if "old_date_time" not in slots:
             start_local = appt.starts_at.astimezone(self._business_tz)
             slots["old_date_time"] = (
@@ -735,6 +823,35 @@ class ConversationService:
                     is_affirmative = resolve_confirmation(fast_path_candidate, validated_flow)
 
                     if is_affirmative:
+                        try:
+                            details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                            if (
+                                validated_flow == ConversationFlow.RESCHEDULE
+                                and not details.old_date_time
+                            ):
+                                raise MissingConfirmationDataError(("old_date_time",))
+                        except MissingConfirmationDataError as exc:
+                            stage, slots, response = self._handle_missing_confirmation_data(
+                                phone, slots, exc
+                            )
+                            await uow.conversation_states.upsert(phone, stage, slots)
+                            await uow.processed_messages.mark_done(
+                                message_id, response_text=response
+                            )
+                            phase3_ms = (time_module.perf_counter() - t3_start) * 1000
+                            total_ms = (time_module.perf_counter() - t0) * 1000
+                            return TurnResult(
+                                response_text=response,
+                                status_code=200,
+                                outcome="missing_confirmation_data",
+                                fast_path=True,
+                                stage_from=initial_stage,
+                                stage_to=stage,
+                                phase1_lease_ms=phase1_ms,
+                                phase2_llm_ms=phase2_llm_ms,
+                                phase3_state_ms=phase3_ms,
+                                total_duration_ms=total_ms,
+                            )
                         stage = ConversationStage.EXECUTING.value
                         slots["executing_message_id"] = message_id
                         await uow.conversation_states.upsert(phone, stage, slots)
@@ -847,6 +964,23 @@ class ConversationService:
                 response_text=response,
                 status_code=200,
                 outcome="missing_pending_flow",
+                total_duration_ms=total_ms,
+            )
+
+        try:
+            details = ConfirmationDetails.from_slots(slots, self._business_tz)
+            if flow == ConversationFlow.RESCHEDULE and not details.old_date_time:
+                raise MissingConfirmationDataError(("old_date_time",))
+        except MissingConfirmationDataError as exc:
+            stage, slots, response = self._handle_missing_confirmation_data(phone, slots, exc)
+            async with self._uow_factory() as uow:
+                await uow.conversation_states.upsert(phone, stage, slots)
+                await uow.processed_messages.mark_done(message_id, response_text=response)
+            total_ms = (time_module.perf_counter() - t0) * 1000
+            return TurnResult(
+                response_text=response,
+                status_code=200,
+                outcome="missing_confirmation_data",
                 total_duration_ms=total_ms,
             )
 
@@ -1089,8 +1223,11 @@ class ConversationService:
                 cust = await uow.customers.get_by_id(appt.customer_id)
                 slots["service_id"] = str(appt.service_id)
                 slots["barber_id"] = str(appt.barber_id)
-                slots["service_name"] = service.name if service else "Corte"
-                slots["barber_name"] = barber.name if barber else "Barbeiro"
+                if service:
+                    slots["service_name"] = service.name
+                    slots["service_price_cents"] = service.price_cents
+                if barber:
+                    slots["barber_name"] = barber.name
                 if cust:
                     slots["customer_name"] = cust.name
                 local_start = appt.starts_at.astimezone(self._business_tz)
@@ -1103,26 +1240,28 @@ class ConversationService:
                 slots["old_date_time"] = old_dt_str
 
                 if flow == ConversationFlow.CANCEL:
-                    return self._enter_confirmation(
-                        flow=ConversationFlow.CANCEL,
-                        slots=slots,
-                    )
+                    try:
+                        details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                        return self._enter_confirmation(
+                            flow=ConversationFlow.CANCEL,
+                            slots=slots,
+                            details=details,
+                        )
+                    except MissingConfirmationDataError as exc:
+                        return self._handle_missing_confirmation_data(phone, slots, exc)
                 else:  # reschedule
                     if intent and intent.local_date and intent.local_time:
                         slots["local_date"] = intent.local_date.isoformat()
                         slots["local_time"] = intent.local_time.isoformat()
-                        old_dt_str = (
-                            f"{format_short_date_pt_br(local_start.date())} às "
-                            f"{format_time_pt_br(local_start.time())}"
-                        )
-                        slots["old_date_time"] = old_dt_str
-                        return self._enter_confirmation(
-                            flow=ConversationFlow.RESCHEDULE,
-                            slots=slots,
-                            details=ConfirmationDetails.from_slots(
-                                slots, self._business_tz, old_date_time=old_dt_str
-                            ),
-                        )
+                        try:
+                            details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                            return self._enter_confirmation(
+                                flow=ConversationFlow.RESCHEDULE,
+                                slots=slots,
+                                details=details,
+                            )
+                        except MissingConfirmationDataError as exc:
+                            return self._handle_missing_confirmation_data(phone, slots, exc)
                     return (
                         ConversationStage.COLLECTING_BOOKING_DETAILS.value,
                         slots,
@@ -1178,10 +1317,26 @@ class ConversationService:
                 slots["local_date"] = chosen_dt.date().isoformat()
                 slots["local_time"] = chosen_dt.time().isoformat()
                 slots.pop("alternative_slots", None)
-                return self._enter_confirmation(
-                    flow=flow,
-                    slots=slots,
-                )
+                if flow == ConversationFlow.RESCHEDULE and (
+                    "old_date_time" not in slots or "service_price_cents" not in slots
+                ):
+                    origin = await self._load_reschedule_origin(uow, phone, slots)
+                    if origin is None:
+                        slots.clear()
+                        return (
+                            ConversationStage.IDLE.value,
+                            slots,
+                            render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND),
+                        )
+                try:
+                    details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                    return self._enter_confirmation(
+                        flow=flow,
+                        slots=slots,
+                        details=details,
+                    )
+                except MissingConfirmationDataError as exc:
+                    return self._handle_missing_confirmation_data(phone, slots, exc)
 
             if intent and (intent.local_date or intent.local_time):
                 if intent.local_date:
@@ -1211,6 +1366,15 @@ class ConversationService:
             if candidate is not None:
                 is_affirmative = resolve_confirmation(candidate, pending_flow)
                 if is_affirmative:
+                    try:
+                        details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                        if (
+                            pending_flow == ConversationFlow.RESCHEDULE
+                            and not details.old_date_time
+                        ):
+                            raise MissingConfirmationDataError(("old_date_time",))
+                    except MissingConfirmationDataError as exc:
+                        return self._handle_missing_confirmation_data(phone, slots, exc)
                     slots["executing_message_id"] = ""
                     return (
                         ConversationStage.EXECUTING.value,
@@ -1294,18 +1458,32 @@ class ConversationService:
 
             # Re-present confirmation prompt if user input was unclear
             if pending_flow == ConversationFlow.BOOK:
-                t_date = date.fromisoformat(slots["local_date"])
-                t_time = time.fromisoformat(slots["local_time"])
-                resp = render_template(
-                    TemplateKey.CONFIRM_BOOKING,
-                    service=slots.get("service_name", "Corte"),
-                    date=format_short_date_pt_br(t_date),
-                    time=format_time_pt_br(t_time),
-                    barber=slots.get("barber_name") or "qualquer barbeiro disponível",
-                    name=slots.get("customer_name", "Cliente"),
-                    price=format_currency_brl(slots.get("service_price_cents", 0)),
-                )
-                return stage, slots, resp
+                try:
+                    details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                    return self._enter_confirmation(
+                        flow=pending_flow,
+                        slots=slots,
+                        details=details,
+                    )
+                except MissingConfirmationDataError as exc:
+                    return self._handle_missing_confirmation_data(phone, slots, exc)
+
+            if pending_flow in (ConversationFlow.RESCHEDULE, ConversationFlow.CANCEL):
+                if "appointment_id" in slots and (
+                    "old_date_time" not in slots
+                    or "service_price_cents" not in slots
+                    or "customer_name" not in slots
+                ):
+                    await self._load_reschedule_origin(uow, phone, slots)
+                try:
+                    ConfirmationDetails.from_slots(slots, self._business_tz)
+                    if pending_flow == ConversationFlow.RESCHEDULE and not slots.get(
+                        "old_date_time"
+                    ):
+                        raise MissingConfirmationDataError(("old_date_time",))
+                except MissingConfirmationDataError as exc:
+                    return self._handle_missing_confirmation_data(phone, slots, exc)
+
             return (
                 stage,
                 slots,
@@ -1356,8 +1534,11 @@ class ConversationService:
                     barber = await uow.barbers.get_by_id(target_appt.barber_id)
                     slots["service_id"] = str(target_appt.service_id)
                     slots["barber_id"] = str(target_appt.barber_id)
-                    slots["service_name"] = service.name if service else "Corte"
-                    slots["barber_name"] = barber.name if barber else "Barbeiro"
+                    if service:
+                        slots["service_name"] = service.name
+                        slots["service_price_cents"] = service.price_cents
+                    if barber:
+                        slots["barber_name"] = barber.name
                     slots["customer_name"] = customer.name
                     start_local = target_appt.starts_at.astimezone(self._business_tz)
                     slots["local_date"] = start_local.date().isoformat()
@@ -1369,21 +1550,28 @@ class ConversationService:
                     slots["old_date_time"] = old_dt_str
 
                     if flow == ConversationFlow.CANCEL:
-                        return self._enter_confirmation(
-                            flow=ConversationFlow.CANCEL,
-                            slots=slots,
-                        )
+                        try:
+                            details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                            return self._enter_confirmation(
+                                flow=ConversationFlow.CANCEL,
+                                slots=slots,
+                                details=details,
+                            )
+                        except MissingConfirmationDataError as exc:
+                            return self._handle_missing_confirmation_data(phone, slots, exc)
                     else:  # reschedule
                         if intent.local_date and intent.local_time:
                             slots["local_date"] = intent.local_date.isoformat()
                             slots["local_time"] = intent.local_time.isoformat()
-                            return self._enter_confirmation(
-                                flow=ConversationFlow.RESCHEDULE,
-                                slots=slots,
-                                details=ConfirmationDetails.from_slots(
-                                    slots, self._business_tz, old_date_time=old_dt_str
-                                ),
-                            )
+                            try:
+                                details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                                return self._enter_confirmation(
+                                    flow=ConversationFlow.RESCHEDULE,
+                                    slots=slots,
+                                    details=details,
+                                )
+                            except MissingConfirmationDataError as exc:
+                                return self._handle_missing_confirmation_data(phone, slots, exc)
                         return (
                             ConversationStage.COLLECTING_BOOKING_DETAILS.value,
                             slots,
@@ -1438,10 +1626,24 @@ class ConversationService:
                 slots["local_time"] = intent.local_time.isoformat()
 
             if "local_date" in slots and "local_time" in slots:
-                return self._enter_confirmation(
-                    flow=ConversationFlow.RESCHEDULE,
-                    slots=slots,
-                )
+                if "old_date_time" not in slots or "service_price_cents" not in slots:
+                    origin = await self._load_reschedule_origin(uow, phone, slots)
+                    if origin is None:
+                        slots.clear()
+                        return (
+                            ConversationStage.IDLE.value,
+                            slots,
+                            render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND),
+                        )
+                try:
+                    details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                    return self._enter_confirmation(
+                        flow=ConversationFlow.RESCHEDULE,
+                        slots=slots,
+                        details=details,
+                    )
+                except MissingConfirmationDataError as exc:
+                    return self._handle_missing_confirmation_data(phone, slots, exc)
             return (
                 ConversationStage.COLLECTING_BOOKING_DETAILS.value,
                 slots,
@@ -1573,10 +1775,15 @@ class ConversationService:
         is_available = any(s == requested_dt for s in avail.slots)
 
         if is_available:
-            return self._enter_confirmation(
-                flow=flow,
-                slots=slots,
-            )
+            try:
+                details = ConfirmationDetails.from_slots(slots, self._business_tz)
+                return self._enter_confirmation(
+                    flow=flow,
+                    slots=slots,
+                    details=details,
+                )
+            except MissingConfirmationDataError as exc:
+                return self._handle_missing_confirmation_data(phone, slots, exc)
 
         # Slot occupied: propose alternatives
         if avail.slots:

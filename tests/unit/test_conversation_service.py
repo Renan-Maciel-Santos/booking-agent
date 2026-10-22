@@ -18,7 +18,7 @@ from booking_agent.domain.enums import (
     ConversationFlow,
     ConversationStage,
 )
-from booking_agent.domain.errors import LLMInvalidOutputError
+from booking_agent.domain.errors import LLMInvalidOutputError, MissingConfirmationDataError
 from booking_agent.integrations.llm.fake_intent_parser import FakeIntentParser
 from booking_agent.services.booking_service import BookingService, localize_datetime
 from booking_agent.services.conversation_service import (
@@ -625,6 +625,7 @@ async def test_confirmado_and_confirmada_remain_affirmative_for_booking(
                 "local_date": "2026-11-21",
                 "local_time": "15:00:00",
                 "customer_name": "Cliente Confirmado",
+                "service_price_cents": 4500,
                 "action_id": str(action_id),
             },
         )
@@ -1570,7 +1571,10 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
         "service_price_cents": 4500,
     }
 
-    stage, out_slots, prompt = conv_service._enter_confirmation(flow=flow, slots=slots)
+    details = ConfirmationDetails.from_slots(slots, ZoneInfo("America/Sao_Paulo"))
+    stage, out_slots, prompt = conv_service._enter_confirmation(
+        flow=flow, slots=slots, details=details
+    )
 
     assert stage == ConversationStage.AWAITING_CONFIRMATION.value
     assert out_slots.get("flow") == flow.value
@@ -1722,3 +1726,139 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
     mock_reschedule.assert_not_called()
     mock_cancel.assert_not_called()
     assert len(uow_factory.store.booking_actions) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("missing_key", "expected_missing_field"),
+    [
+        ("service_name", "service"),
+        ("local_date", "date"),
+        ("local_time", "time"),
+        ("customer_name", "name"),
+        ("service_price_cents", "price"),
+    ],
+)
+def test_confirmation_details_from_slots_missing_field_raises_error(
+    missing_key: str,
+    expected_missing_field: str,
+) -> None:
+    """from_slots without each mandatory field raises MissingConfirmationDataError listing it."""
+    valid_slots: dict[str, Any] = {
+        "service_name": "Corte de Cabelo",
+        "local_date": "2026-10-25",
+        "local_time": "14:00:00",
+        "customer_name": "Cliente Teste",
+        "service_price_cents": 4500,
+        "barber_name": "Carlos Barber",
+    }
+    valid_slots.pop(missing_key)
+    with pytest.raises(MissingConfirmationDataError) as exc_info:
+        ConfirmationDetails.from_slots(valid_slots, ZoneInfo("America/Sao_Paulo"))
+
+    assert expected_missing_field in exc_info.value.missing_fields
+
+
+@pytest.mark.unit
+def test_confirmation_details_from_slots_missing_all_fields_lists_all() -> None:
+    """from_slots on empty slots lists all missing fields in MissingConfirmationDataError."""
+    with pytest.raises(MissingConfirmationDataError) as exc_info:
+        ConfirmationDetails.from_slots({}, ZoneInfo("America/Sao_Paulo"))
+
+    assert exc_info.value.missing_fields == ("service", "date", "time", "name", "price")
+
+
+@pytest.mark.unit
+def test_reschedule_flow_without_old_date_time_raises_error() -> None:
+    """_enter_confirmation requires old_date_time for RESCHEDULE and raises if missing."""
+    conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
+    details = ConfirmationDetails(
+        service="Corte",
+        date="25/10",
+        time="14:00",
+        name="Cliente",
+        price="R$ 45,00",
+        old_date_time=None,
+    )
+    with pytest.raises(MissingConfirmationDataError) as exc_info:
+        conv_service._enter_confirmation(
+            flow=ConversationFlow.RESCHEDULE,
+            slots={},
+            details=details,
+        )
+    assert exc_info.value.missing_fields == ("old_date_time",)
+
+
+@pytest.mark.unit
+async def test_incomplete_slots_in_awaiting_confirmation_fails_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Incomplete slots in AWAITING_CONFIRMATION fail safe to IDLE with neutral message."""
+    conv_service, uow_factory, _, _, _, svc_id, barber_id = _create_unit_fixtures()
+    phone = "+5511999997788"
+
+    async with uow_factory() as uow:
+        await uow.conversation_states.upsert(
+            phone=phone,
+            stage=ConversationStage.AWAITING_CONFIRMATION.value,
+            slots={
+                "flow": ConversationFlow.BOOK.value,
+                "action_id": str(uuid.uuid4()),
+                # missing customer_name and service_price_cents
+                "service_id": str(svc_id),
+                "barber_id": str(barber_id),
+                "local_date": "2026-10-25",
+                "local_time": "14:00:00",
+            },
+        )
+
+    mock_book = AsyncMock()
+    mock_reschedule = AsyncMock()
+    mock_cancel = AsyncMock()
+    monkeypatch.setattr(conv_service._booking_service, "book", mock_book)
+    monkeypatch.setattr(conv_service._booking_service, "reschedule", mock_reschedule)
+    monkeypatch.setattr(conv_service._booking_service, "cancel", mock_cancel)
+
+    resp = await conv_service.handle_message(
+        message_id="msg_incomplete_slots_confirm",
+        phone=phone,
+        text="sim",
+    )
+
+    assert resp == render_template(TemplateKey.CONFIRMATION_DATA_UNAVAILABLE)
+    assert "Tive um problema para montar a confirmação" in resp
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.IDLE.value
+        assert st.slots == {}
+
+    mock_book.assert_not_called()
+    mock_reschedule.assert_not_called()
+    mock_cancel.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("flow", list(ConversationFlow))
+def test_no_confirmation_prompt_contains_zero_price_or_empty_datetime(
+    flow: ConversationFlow,
+) -> None:
+    """Confirmation prompts rendered via _enter_confirmation never contain 'R$ 0,00' or ' às  '."""
+    conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
+    details = ConfirmationDetails(
+        service="Corte Teste",
+        date="25/10",
+        time="14:00",
+        name="Cliente Real",
+        price="R$ 50,00",
+        barber="Barbeiro Carlos",
+        old_date_time="24/10 às 10:00",
+    )
+    _stage, _out_slots, prompt = conv_service._enter_confirmation(
+        flow=flow,
+        slots={"local_date": "2026-10-25", "local_time": "14:00:00"},
+        details=details,
+    )
+    assert "R$ 0,00" not in prompt
+    assert " às  " not in prompt

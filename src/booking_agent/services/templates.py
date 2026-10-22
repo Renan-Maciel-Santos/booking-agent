@@ -61,6 +61,7 @@ class TemplateKey(StrEnum):
     NO_SLOTS_AVAILABLE = "no_slots_available"
     ASK_RESCHEDULE_DATETIME = "ask_reschedule_datetime"
     RESCHEDULE_ORIGIN_NOT_FOUND = "reschedule_origin_not_found"
+    CONFIRMATION_DATA_UNAVAILABLE = "confirmation_data_unavailable"
 
 
 _TEMPLATES: dict[TemplateKey, str] = {
@@ -150,6 +151,10 @@ _TEMPLATES: dict[TemplateKey, str] = {
     ),
     TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND: (
         "Não consegui localizar esse agendamento. "
+        "Pode me dizer de novo o que você gostaria de fazer?"
+    ),
+    TemplateKey.CONFIRMATION_DATA_UNAVAILABLE: (
+        "Tive um problema para montar a confirmação. "
         "Pode me dizer de novo o que você gostaria de fazer?"
     ),
 }
