@@ -49,7 +49,8 @@ is written in **English**.
   `refactor:`, `test:`, `build:`) and keep commits small.
 - Record architectural changes as a new ADR in `docs/adr/`.
 - Never create `.env` or commit secrets. Only `.env.example` is versioned.
-- Do not push. Propose a plan first and wait for approval on non-trivial changes.
+- Push only when the task explicitly authorizes it. Never use --force; use --force-with-lease only when explicitly authorized for a named branch.
+- Propose a plan first and wait for approval on non-trivial changes.
 
 ## Process and quality rules
 
@@ -60,6 +61,16 @@ is written in **English**.
 - Never swallow errors from external services: propagate and handle them explicitly.
 - No test-specific logic or bypasses inside production code.
 - Never commit agent log files, status files, scratch files, or session artifacts to the repository.
+- Test what you configure: if a rule says something fails or succeeds, prove both branches in tests.
+- When a command depends on an external service (e.g. database, container), verify the dependency is actually up before running the command, and report clearly if it is down.
+- For sequential multi-step tasks, run verifications between steps, not only at the end.
+- When a review cycle concludes, review whether new process or quality rules emerged from the discussion and record them in AGENTS.md.
+- Every CLI command or code snippet in documentation must be proven against the actual code. Never write commands from memory.
+- Before fixing an issue, write or point to an explicit reproducer. A fix without a proven failure mode is incomplete.
+- When a proposed fix touches more files than the issue description allows, stop and discuss before touching them.
+- Prefer adding an explicit CLI flag or configuration option over modifying global defaults when supporting alternative modes.
+- The permitted file list for a task is strict. If you need to touch a file outside it, stop and ask.
+- When testing time-dependent logic, inject a Clock; never rely on real-time sleep or the host clock.
 
 ## Agent skills
 
