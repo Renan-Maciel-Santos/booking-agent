@@ -10,6 +10,37 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 MIN_WEBHOOK_SECRET_LENGTH: int = 32
 
 
+def validate_webhook_secret_value(raw: str) -> str:
+    """Ensure webhook secret is normalized, non-placeholder, and meets minimum length.
+
+    Args:
+        raw: Raw secret string to validate.
+
+    Returns:
+        Stripped, validated secret string.
+
+    Raises:
+        ValueError: If empty, starts with 'change-me' (case-insensitive), or shorter than 32 chars.
+    """
+    secret_value = raw.strip()
+    if not secret_value:
+        raise ValueError("WEBHOOK_SECRET must not be empty")
+    suggestion = (
+        'Generate a secure secret with: python -c "import secrets; print(secrets.token_hex(32))"'
+    )
+    if secret_value.lower().startswith("change-me"):
+        raise ValueError(
+            "WEBHOOK_SECRET must not use an example placeholder starting with 'change-me'. "
+            f"{suggestion}"
+        )
+    if len(secret_value) < MIN_WEBHOOK_SECRET_LENGTH:
+        raise ValueError(
+            f"WEBHOOK_SECRET must be at least {MIN_WEBHOOK_SECRET_LENGTH} characters long. "
+            f"{suggestion}"
+        )
+    return secret_value
+
+
 class Settings(BaseSettings):
     """Typed runtime configuration.
 
@@ -62,24 +93,8 @@ class Settings(BaseSettings):
     @classmethod
     def validate_webhook_secret(cls, v: SecretStr) -> SecretStr:
         """Ensure webhook_secret is normalized, non-placeholder, and meets minimum length."""
-        secret_value = v.get_secret_value().strip()
-        if not secret_value:
-            raise ValueError("WEBHOOK_SECRET must not be empty")
-        suggestion = (
-            "Generate a secure secret with: "
-            'python -c "import secrets; print(secrets.token_hex(32))"'
-        )
-        if secret_value.lower().startswith("change-me"):
-            raise ValueError(
-                "WEBHOOK_SECRET must not use an example placeholder starting with 'change-me'. "
-                f"{suggestion}"
-            )
-        if len(secret_value) < MIN_WEBHOOK_SECRET_LENGTH:
-            raise ValueError(
-                f"WEBHOOK_SECRET must be at least {MIN_WEBHOOK_SECRET_LENGTH} characters long. "
-                f"{suggestion}"
-            )
-        return SecretStr(secret_value)
+        validated = validate_webhook_secret_value(v.get_secret_value())
+        return SecretStr(validated)
 
     @field_validator("business_timezone")
     @classmethod
