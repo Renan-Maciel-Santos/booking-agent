@@ -292,6 +292,75 @@ class ConversationService:
         self._settings = settings
         self._business_tz = ZoneInfo(settings.business_timezone)
 
+    def _enter_confirmation(
+        self,
+        flow: ConversationFlow,
+        slots: dict[str, Any],
+        **template_overrides: str,
+    ) -> tuple[str, dict[str, Any], str]:
+        """Single entry point for transitioning the conversation into AWAITING_CONFIRMATION.
+
+        Generates a new action_id, strictly records slots["flow"], and chooses the
+        exact confirmation template corresponding to the flow using exhaustive matching.
+
+        Args:
+            flow: Active ConversationFlow member.
+            slots: Slot dictionary to persist with the flow and action_id.
+            **template_overrides: Explicit overrides for template variables.
+
+        Returns:
+            Tuple of (stage, slots, confirmation_prompt).
+        """
+        slots["action_id"] = str(uuid.uuid4())
+        slots["flow"] = flow.value
+        slots.pop("awaiting", None)
+
+        service_name = slots.get("service_name", "Corte")
+        barber_name = slots.get("barber_name") or "qualquer barbeiro disponível"
+        target_date = date.fromisoformat(slots["local_date"]) if "local_date" in slots else None
+        target_time = time.fromisoformat(slots["local_time"]) if "local_time" in slots else None
+        formatted_date = format_short_date_pt_br(target_date) if target_date else ""
+        formatted_time = format_time_pt_br(target_time) if target_time else ""
+
+        match flow:
+            case ConversationFlow.BOOK:
+                customer_name = slots.get("customer_name", "Cliente")
+                price_cents = slots.get("service_price_cents", 0)
+                formatted_price = format_currency_brl(price_cents)
+                prompt = render_template(
+                    TemplateKey.CONFIRM_BOOKING,
+                    service=template_overrides.get("service", service_name),
+                    date=template_overrides.get("date", formatted_date),
+                    time=template_overrides.get("time", formatted_time),
+                    barber=template_overrides.get("barber", barber_name),
+                    name=template_overrides.get("name", customer_name),
+                    price=template_overrides.get("price", formatted_price),
+                )
+            case ConversationFlow.RESCHEDULE:
+                old_date_time = template_overrides.get(
+                    "old_date_time",
+                    slots.get("old_date_time", "horário anterior"),
+                )
+                prompt = render_template(
+                    TemplateKey.CONFIRM_RESCHEDULE,
+                    service=template_overrides.get("service", service_name),
+                    old_date_time=old_date_time,
+                    new_date=template_overrides.get("new_date", formatted_date),
+                    new_time=template_overrides.get("new_time", formatted_time),
+                )
+            case ConversationFlow.CANCEL:
+                prompt = render_template(
+                    TemplateKey.CONFIRM_CANCEL,
+                    service=template_overrides.get("service", service_name),
+                    date=template_overrides.get("date", formatted_date),
+                    time=template_overrides.get("time", formatted_time),
+                    barber=template_overrides.get("barber", barber_name),
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+
+        return ConversationStage.AWAITING_CONFIRMATION.value, slots, prompt
+
     def _extract_pending_flow(
         self,
         stage: str,
@@ -894,33 +963,24 @@ class ConversationService:
                 slots["local_time"] = local_start.time().isoformat()
 
                 if flow == ConversationFlow.CANCEL:
-                    slots["action_id"] = str(uuid.uuid4())
-                    next_stage = ConversationStage.AWAITING_CONFIRMATION.value
-                    resp = render_template(
-                        TemplateKey.CONFIRM_CANCEL,
-                        service=slots["service_name"],
-                        date=format_short_date_pt_br(local_start.date()),
-                        time=format_time_pt_br(local_start.time()),
-                        barber=slots["barber_name"],
+                    return self._enter_confirmation(
+                        flow=ConversationFlow.CANCEL,
+                        slots=slots,
                     )
-                    return next_stage, slots, resp
                 else:  # reschedule
                     if intent and intent.local_date and intent.local_time:
                         slots["local_date"] = intent.local_date.isoformat()
                         slots["local_time"] = intent.local_time.isoformat()
-                        slots["action_id"] = str(uuid.uuid4())
-                        next_stage = ConversationStage.AWAITING_CONFIRMATION.value
-                        resp = render_template(
-                            TemplateKey.CONFIRM_RESCHEDULE,
-                            service=slots["service_name"],
-                            old_date_time=(
-                                f"{format_short_date_pt_br(local_start.date())} às "
-                                f"{format_time_pt_br(local_start.time())}"
-                            ),
-                            new_date=format_short_date_pt_br(intent.local_date),
-                            new_time=format_time_pt_br(intent.local_time),
+                        old_dt_str = (
+                            f"{format_short_date_pt_br(local_start.date())} às "
+                            f"{format_time_pt_br(local_start.time())}"
                         )
-                        return next_stage, slots, resp
+                        slots["old_date_time"] = old_dt_str
+                        return self._enter_confirmation(
+                            flow=ConversationFlow.RESCHEDULE,
+                            slots=slots,
+                            old_date_time=old_dt_str,
+                        )
                     return (
                         ConversationStage.COLLECTING_BOOKING_DETAILS.value,
                         slots,
@@ -976,27 +1036,10 @@ class ConversationService:
                 slots["local_date"] = chosen_dt.date().isoformat()
                 slots["local_time"] = chosen_dt.time().isoformat()
                 slots.pop("alternative_slots", None)
-                slots["action_id"] = str(uuid.uuid4())
-                next_stage = ConversationStage.AWAITING_CONFIRMATION.value
-                if flow == ConversationFlow.RESCHEDULE:
-                    resp = render_template(
-                        TemplateKey.CONFIRM_RESCHEDULE,
-                        service=slots.get("service_name", "Corte"),
-                        old_date_time="horário anterior",
-                        new_date=format_short_date_pt_br(chosen_dt.date()),
-                        new_time=format_time_pt_br(chosen_dt.time()),
-                    )
-                else:
-                    resp = render_template(
-                        TemplateKey.CONFIRM_BOOKING,
-                        service=slots.get("service_name", "Corte"),
-                        date=format_short_date_pt_br(chosen_dt.date()),
-                        time=format_time_pt_br(chosen_dt.time()),
-                        barber=slots.get("barber_name") or "qualquer barbeiro disponível",
-                        name=slots.get("customer_name", "Cliente"),
-                        price=format_currency_brl(slots.get("service_price_cents", 0)),
-                    )
-                return next_stage, slots, resp
+                return self._enter_confirmation(
+                    flow=flow,
+                    slots=slots,
+                )
 
             if intent and (intent.local_date or intent.local_time):
                 if intent.local_date:
@@ -1146,33 +1189,24 @@ class ConversationService:
                     slots["local_time"] = start_local.time().isoformat()
 
                     if flow == ConversationFlow.CANCEL:
-                        slots["action_id"] = str(uuid.uuid4())
-                        next_stage = ConversationStage.AWAITING_CONFIRMATION.value
-                        resp = render_template(
-                            TemplateKey.CONFIRM_CANCEL,
-                            service=slots["service_name"],
-                            date=format_short_date_pt_br(start_local.date()),
-                            time=format_time_pt_br(start_local.time()),
-                            barber=slots["barber_name"],
+                        return self._enter_confirmation(
+                            flow=ConversationFlow.CANCEL,
+                            slots=slots,
                         )
-                        return next_stage, slots, resp
                     else:  # reschedule
                         if intent.local_date and intent.local_time:
                             slots["local_date"] = intent.local_date.isoformat()
                             slots["local_time"] = intent.local_time.isoformat()
-                            slots["action_id"] = str(uuid.uuid4())
-                            next_stage = ConversationStage.AWAITING_CONFIRMATION.value
-                            resp = render_template(
-                                TemplateKey.CONFIRM_RESCHEDULE,
-                                service=slots["service_name"],
-                                old_date_time=(
-                                    f"{format_short_date_pt_br(start_local.date())} às "
-                                    f"{format_time_pt_br(start_local.time())}"
-                                ),
-                                new_date=format_short_date_pt_br(intent.local_date),
-                                new_time=format_time_pt_br(intent.local_time),
+                            old_dt_str = (
+                                f"{format_short_date_pt_br(start_local.date())} às "
+                                f"{format_time_pt_br(start_local.time())}"
                             )
-                            return next_stage, slots, resp
+                            slots["old_date_time"] = old_dt_str
+                            return self._enter_confirmation(
+                                flow=ConversationFlow.RESCHEDULE,
+                                slots=slots,
+                                old_date_time=old_dt_str,
+                            )
                         return (
                             ConversationStage.COLLECTING_BOOKING_DETAILS.value,
                             slots,
@@ -1227,18 +1261,10 @@ class ConversationService:
                 slots["local_time"] = intent.local_time.isoformat()
 
             if "local_date" in slots and "local_time" in slots:
-                slots["action_id"] = str(uuid.uuid4())
-                next_stage = ConversationStage.AWAITING_CONFIRMATION.value
-                target_date = date.fromisoformat(slots["local_date"])
-                target_time = time.fromisoformat(slots["local_time"])
-                resp = render_template(
-                    TemplateKey.CONFIRM_RESCHEDULE,
-                    service=slots.get("service_name", "Corte"),
-                    old_date_time="horário anterior",
-                    new_date=format_short_date_pt_br(target_date),
-                    new_time=format_time_pt_br(target_time),
+                return self._enter_confirmation(
+                    flow=ConversationFlow.RESCHEDULE,
+                    slots=slots,
                 )
-                return next_stage, slots, resp
             return (
                 ConversationStage.COLLECTING_BOOKING_DETAILS.value,
                 slots,
@@ -1350,6 +1376,7 @@ class ConversationService:
         uow: UnitOfWork,
         phone: str,
         slots: dict[str, Any],
+        flow: ConversationFlow = ConversationFlow.BOOK,
     ) -> tuple[str, dict[str, Any], str]:
         """Validate availability for collected slots and produce confirmation prompt."""
         service_id = uuid.UUID(slots["service_id"])
@@ -1368,27 +1395,16 @@ class ConversationService:
         is_available = any(s == requested_dt for s in avail.slots)
 
         if is_available:
-            slots.pop("awaiting", None)
-            slots["action_id"] = str(uuid.uuid4())
-            slots["flow"] = ConversationFlow.BOOK.value
-            next_stage = ConversationStage.AWAITING_CONFIRMATION.value
-            barber_display = slots.get("barber_name") or "qualquer barbeiro disponível"
-            resp = render_template(
-                TemplateKey.CONFIRM_BOOKING,
-                service=slots.get("service_name", "Corte"),
-                date=format_short_date_pt_br(target_date),
-                time=format_time_pt_br(target_time),
-                barber=barber_display,
-                name=slots.get("customer_name", "Cliente"),
-                price=format_currency_brl(slots.get("service_price_cents", 0)),
+            return self._enter_confirmation(
+                flow=flow,
+                slots=slots,
             )
-            return next_stage, slots, resp
 
         # Slot occupied: propose alternatives
         if avail.slots:
             slots.pop("awaiting", None)
             slots["alternative_slots"] = [dt.isoformat() for dt in avail.slots[:3]]
-            slots["flow"] = ConversationFlow.BOOK.value
+            slots["flow"] = flow.value
             formatted_alts = ", ".join(
                 format_time_pt_br(dt.astimezone(self._business_tz).time()) for dt in avail.slots[:3]
             )
