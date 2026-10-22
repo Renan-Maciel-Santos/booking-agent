@@ -18,6 +18,7 @@ from pathlib import Path
 import httpx
 
 from booking_agent.api.security import compute_signature
+from booking_agent.config import validate_webhook_secret_value
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -239,18 +240,12 @@ def run_demo(
     return 0
 
 
-def resolve_webhook_secret(explicit_secret: str | None) -> str:
-    """Resolve the webhook secret from CLI, environment, or .env file.
-
-    Args:
-        explicit_secret: Secret passed via command-line argument, if any.
+def resolve_webhook_secret() -> str:
+    """Resolve the webhook secret from environment or .env file.
 
     Returns:
         Resolved secret string.
     """
-    if explicit_secret and explicit_secret.strip():
-        return explicit_secret.strip()
-
     env_val = os.getenv("WEBHOOK_SECRET")
     if env_val and env_val.strip():
         return env_val.strip()
@@ -282,11 +277,6 @@ def main() -> None:
         help="Base URL of the booking-agent API (default: http://localhost:8000)",
     )
     parser.add_argument(
-        "--secret",
-        default=None,
-        help="Shared HMAC secret for webhook authentication (defaults to WEBHOOK_SECRET env var)",
-    )
-    parser.add_argument(
         "--phone",
         default="+5511999998888",
         help="Customer phone number in E.164 format (default: +5511999998888)",
@@ -304,25 +294,11 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    secret = resolve_webhook_secret(args.secret)
-
-    if not secret:
-        sys.stderr.write(
-            f"{RED}Error: WEBHOOK_SECRET is not configured.{RESET}\n"
-            "Please generate a 32-byte secret (e.g. python -c "
-            "'import secrets; print(secrets.token_hex(32))'),\n"
-            "set WEBHOOK_SECRET in your environment or .env file, or pass --secret.\n"
-        )
-        sys.exit(1)
-
-    lowered = secret.lower()
-    insecure = any(p in lowered for p in ("change-me", "placeholder", "secret-key", "example"))
-    if insecure or len(secret) < 32:
-        sys.stderr.write(
-            f"{RED}Error: WEBHOOK_SECRET is set to an insecure placeholder "
-            f"or is shorter than 32 characters.{RESET}\n"
-            "Please generate a secure random 32-byte secret before running the demonstration.\n"
-        )
+    raw_secret = resolve_webhook_secret()
+    try:
+        secret = validate_webhook_secret_value(raw_secret)
+    except ValueError as exc:
+        sys.stderr.write(f"{RED}Error: {exc}{RESET}\n")
         sys.exit(1)
 
     exit_code = run_demo(
