@@ -1106,21 +1106,27 @@ async def test_cancel_confirmation_negative_keeps_active_and_avoids_cancelad() -
 
 
 @pytest.mark.unit
-async def test_investigation_a6_awaiting_confirmation_cancel_flow() -> None:
-    """A6 Investigation: test whether LLM output for ambiguous phrase in AWAITING_CONFIRMATION
-    CANCEL flow can reach EXECUTING.
+@pytest.mark.parametrize("intent_type", list(IntentType))
+@pytest.mark.parametrize("has_updates", [False, True])
+async def test_unrecognized_reply_during_cancel_confirmation_never_executes(
+    intent_type: IntentType,
+    has_updates: bool,
+) -> None:
+    """Verify that no LLM intent (with or without extracted slot updates) can trigger
+    execution while awaiting confirmation of a cancellation.
     """
     conv_service, uow_factory, clock, intent_parser, _, svc_id, barber_id = _create_unit_fixtures()
     phone = "+5511999994001"
+    target_dt = clock.now() + timedelta(days=1)
 
     async with uow_factory() as uow:
-        cust = await uow.customers.create(name="Cliente Investigacao A6", phone=phone)
+        cust = await uow.customers.create(name="Cliente Teste", phone=phone)
         appt = await uow.appointments.create(
             customer_id=cust.id,
             service_id=svc_id,
             barber_id=barber_id,
-            starts_at=clock.now() + timedelta(days=1),
-            ends_at=clock.now() + timedelta(days=1, minutes=30),
+            starts_at=target_dt,
+            ends_at=target_dt + timedelta(minutes=30),
             price_cents=4500,
             status=AppointmentStatus.CONFIRMED,
         )
@@ -1132,32 +1138,47 @@ async def test_investigation_a6_awaiting_confirmation_cancel_flow() -> None:
                 "flow": ConversationFlow.CANCEL.value,
                 "appointment_id": str(appt.id),
                 "action_id": str(action_id),
+                "service_id": str(svc_id),
+                "barber_id": str(barber_id),
                 "service_name": "Corte de Cabelo",
                 "barber_name": "Carlos Barber",
+                "local_date": target_dt.date().isoformat(),
+                "local_time": target_dt.time().isoformat(),
             },
         )
 
-    # Mock the LLM to return the most affirmative intent possible:
-    # A cancellation intent
-    intent_parser._responses["não pode cancelar"] = BookingIntent(
-        intent=IntentType.CANCEL,
-    )
+    unrecognized_text = "não pode cancelar"
+    if has_updates:
+        intent_parser._responses[unrecognized_text] = BookingIntent(
+            intent=intent_type,
+            local_date=target_dt.date() + timedelta(days=1),
+            local_time=time(14, 0),
+        )
+    else:
+        intent_parser._responses[unrecognized_text] = BookingIntent(
+            intent=intent_type,
+        )
 
     turn_result = await conv_service.process_turn(
-        message_id="msg_investigation_a6",
+        message_id="msg_cancel_disambig",
         phone=phone,
-        text="não pode cancelar",
+        text=unrecognized_text,
     )
 
-    assert turn_result.stage_to == ConversationStage.AWAITING_CONFIRMATION.value
-    assert turn_result.outcome == "turn_progressed"
-    assert turn_result.response_text == render_template(TemplateKey.CLARIFICATION_PROMPT)
+    # Prove that the turn did NOT execute the pending cancellation
+    assert turn_result.stage_to != ConversationStage.EXECUTING.value
 
     async with uow_factory() as uow:
         st = await uow.conversation_states.get(phone)
         appt_after = await uow.appointments.get_by_id(appt.id)
 
     assert st is not None
-    assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+    if not has_updates:
+        assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
+        assert turn_result.response_text == render_template(TemplateKey.CLARIFICATION_PROMPT)
+    else:
+        assert st.stage != ConversationStage.EXECUTING.value
+
+    # Crucial invariant: original appointment remains active and confirmed in the repository
     assert appt_after is not None
     assert appt_after.status == AppointmentStatus.CONFIRMED
