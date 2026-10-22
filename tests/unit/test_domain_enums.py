@@ -1,6 +1,11 @@
 """Unit tests for domain enums."""
 
-from booking_agent.domain.enums import AppointmentStatus, MessageStatus
+from booking_agent.domain.enums import (
+    AppointmentStatus,
+    ConfirmationCandidate,
+    ConversationFlow,
+    MessageStatus,
+)
 
 
 def test_appointment_status_values() -> None:
@@ -26,4 +31,30 @@ def test_message_status_values() -> None:
         MessageStatus.PROCESSING,
         MessageStatus.DONE,
         MessageStatus.FAILED,
+    }
+
+
+def test_conversation_flow_values() -> None:
+    """Verify ConversationFlow enum members and string values."""
+    assert ConversationFlow.BOOK.value == "book"
+    assert ConversationFlow.RESCHEDULE.value == "reschedule"
+    assert ConversationFlow.CANCEL.value == "cancel"
+    assert ConversationFlow("book") is ConversationFlow.BOOK
+    assert set(ConversationFlow) == {
+        ConversationFlow.BOOK,
+        ConversationFlow.RESCHEDULE,
+        ConversationFlow.CANCEL,
+    }
+
+
+def test_confirmation_candidate_values() -> None:
+    """Verify ConfirmationCandidate enum members and string values."""
+    assert ConfirmationCandidate.AFFIRMATIVE.value == "affirmative"
+    assert ConfirmationCandidate.NEGATIVE.value == "negative"
+    assert ConfirmationCandidate.CANCEL_ACTION.value == "cancel_action"
+    assert ConfirmationCandidate("affirmative") is ConfirmationCandidate.AFFIRMATIVE
+    assert set(ConfirmationCandidate) == {
+        ConfirmationCandidate.AFFIRMATIVE,
+        ConfirmationCandidate.NEGATIVE,
+        ConfirmationCandidate.CANCEL_ACTION,
     }

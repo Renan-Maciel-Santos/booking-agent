@@ -37,3 +37,19 @@ class ConversationStage(StrEnum):
     EXECUTING = "executing"
     CHOOSING_APPOINTMENT = "choosing_appointment"
     COMPLETED = "completed"
+
+
+class ConversationFlow(StrEnum):
+    """Supported multi-turn conversation flows."""
+
+    BOOK = "book"
+    RESCHEDULE = "reschedule"
+    CANCEL = "cancel"
+
+
+class ConfirmationCandidate(StrEnum):
+    """Category of affirmative, negative, or context-dependent confirmation token."""
+
+    AFFIRMATIVE = "affirmative"
+    NEGATIVE = "negative"
+    CANCEL_ACTION = "cancel_action"

@@ -108,3 +108,12 @@ class ActionAlreadyExistsError(DomainError):
             f"Action {action_id} already exists." if action_id else "Action already exists."
         )
         self.action_id = action_id
+
+
+class MissingConfirmationDataError(DomainError):
+    """Raised when mandatory confirmation details are missing from conversation state."""
+
+    def __init__(self, missing_fields: tuple[str, ...]) -> None:
+        """Initialize with tuple of missing field names."""
+        super().__init__(f"Missing required confirmation fields: {', '.join(missing_fields)}")
+        self.missing_fields = missing_fields
