@@ -22,6 +22,7 @@ from booking_agent.domain.errors import LLMInvalidOutputError
 from booking_agent.integrations.llm.fake_intent_parser import FakeIntentParser
 from booking_agent.services.booking_service import BookingService, localize_datetime
 from booking_agent.services.conversation_service import (
+    ConfirmationDetails,
     ConversationService,
     classify_fast_path_candidate,
     is_valid_customer_name,
@@ -1575,6 +1576,33 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
     assert out_slots.get("flow") == flow.value
     assert "action_id" in out_slots
     assert expected_template_fragment in prompt
+
+
+@pytest.mark.unit
+def test_enter_confirmation_with_explicit_typed_details() -> None:
+    """Verify that _enter_confirmation accepts explicit typed ConfirmationDetails."""
+    conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
+    slots: dict[str, Any] = {}
+    details = ConfirmationDetails(
+        service="Barba Terapia",
+        date="26/10",
+        time="16:00",
+        barber="Marcos Barber",
+        name="Carlos",
+        price="R$ 55,00",
+        old_date_time="25/10 às 15:00",
+    )
+    stage, out_slots, prompt = conv_service._enter_confirmation(
+        flow=ConversationFlow.RESCHEDULE,
+        slots=slots,
+        details=details,
+    )
+    assert stage == ConversationStage.AWAITING_CONFIRMATION.value
+    assert out_slots.get("flow") == ConversationFlow.RESCHEDULE.value
+    assert "Barba Terapia" in prompt
+    assert "25/10 às 15:00" in prompt
+    assert "26/10" in prompt
+    assert "16:00" in prompt
 
 
 @pytest.mark.unit

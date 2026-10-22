@@ -70,6 +70,52 @@ class TurnResult:
     total_duration_ms: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class ConfirmationDetails:
+    """Typed details for rendering deterministic confirmation messages."""
+
+    service: str
+    date: str
+    time: str
+    barber: str = "qualquer barbeiro disponível"
+    name: str = "Cliente"
+    price: str = "R$ 0,00"
+    old_date_time: str = "horário anterior"
+
+    @classmethod
+    def from_slots(
+        cls,
+        slots: dict[str, Any],
+        business_tz: ZoneInfo,
+        *,
+        old_date_time: str | None = None,
+        service: str | None = None,
+        date_str: str | None = None,
+        time_str: str | None = None,
+        barber: str | None = None,
+        name: str | None = None,
+        price: str | None = None,
+    ) -> "ConfirmationDetails":
+        """Build ConfirmationDetails from conversation slots with fallback defaults."""
+        target_date = date.fromisoformat(slots["local_date"]) if "local_date" in slots else None
+        target_time = time.fromisoformat(slots["local_time"]) if "local_time" in slots else None
+        formatted_date = format_short_date_pt_br(target_date) if target_date else ""
+        formatted_time = format_time_pt_br(target_time) if target_time else ""
+        price_cents = slots.get("service_price_cents", 0)
+
+        resolved_old_dt = old_date_time or slots.get("old_date_time", "horário anterior")
+
+        return cls(
+            service=service or slots.get("service_name", "Corte"),
+            date=date_str or formatted_date,
+            time=time_str or formatted_time,
+            barber=barber or slots.get("barber_name") or "qualquer barbeiro disponível",
+            name=name or slots.get("customer_name", "Cliente"),
+            price=price or format_currency_brl(price_cents),
+            old_date_time=resolved_old_dt,
+        )
+
+
 _AFFIRMATIVE_TOKENS: set[str] = {
     "sim",
     "s",
@@ -297,7 +343,7 @@ class ConversationService:
         self,
         flow: ConversationFlow,
         slots: dict[str, Any],
-        **template_overrides: str,
+        details: ConfirmationDetails | None = None,
     ) -> tuple[str, dict[str, Any], str]:
         """Single entry point for transitioning the conversation into AWAITING_CONFIRMATION.
 
@@ -307,7 +353,7 @@ class ConversationService:
         Args:
             flow: Active ConversationFlow member.
             slots: Slot dictionary to persist with the flow and action_id.
-            **template_overrides: Explicit overrides for template variables.
+            details: Typed details for template rendering (extracted from slots if omitted).
 
         Returns:
             Tuple of (stage, slots, confirmation_prompt).
@@ -316,46 +362,35 @@ class ConversationService:
         slots["flow"] = flow.value
         slots.pop("awaiting", None)
 
-        service_name = slots.get("service_name", "Corte")
-        barber_name = slots.get("barber_name") or "qualquer barbeiro disponível"
-        target_date = date.fromisoformat(slots["local_date"]) if "local_date" in slots else None
-        target_time = time.fromisoformat(slots["local_time"]) if "local_time" in slots else None
-        formatted_date = format_short_date_pt_br(target_date) if target_date else ""
-        formatted_time = format_time_pt_br(target_time) if target_time else ""
+        if details is None:
+            details = ConfirmationDetails.from_slots(slots, self._business_tz)
 
         match flow:
             case ConversationFlow.BOOK:
-                customer_name = slots.get("customer_name", "Cliente")
-                price_cents = slots.get("service_price_cents", 0)
-                formatted_price = format_currency_brl(price_cents)
                 prompt = render_template(
                     TemplateKey.CONFIRM_BOOKING,
-                    service=template_overrides.get("service", service_name),
-                    date=template_overrides.get("date", formatted_date),
-                    time=template_overrides.get("time", formatted_time),
-                    barber=template_overrides.get("barber", barber_name),
-                    name=template_overrides.get("name", customer_name),
-                    price=template_overrides.get("price", formatted_price),
+                    service=details.service,
+                    date=details.date,
+                    time=details.time,
+                    barber=details.barber,
+                    name=details.name,
+                    price=details.price,
                 )
             case ConversationFlow.RESCHEDULE:
-                old_date_time = template_overrides.get(
-                    "old_date_time",
-                    slots.get("old_date_time", "horário anterior"),
-                )
                 prompt = render_template(
                     TemplateKey.CONFIRM_RESCHEDULE,
-                    service=template_overrides.get("service", service_name),
-                    old_date_time=old_date_time,
-                    new_date=template_overrides.get("new_date", formatted_date),
-                    new_time=template_overrides.get("new_time", formatted_time),
+                    service=details.service,
+                    old_date_time=details.old_date_time,
+                    new_date=details.date,
+                    new_time=details.time,
                 )
             case ConversationFlow.CANCEL:
                 prompt = render_template(
                     TemplateKey.CONFIRM_CANCEL,
-                    service=template_overrides.get("service", service_name),
-                    date=template_overrides.get("date", formatted_date),
-                    time=template_overrides.get("time", formatted_time),
-                    barber=template_overrides.get("barber", barber_name),
+                    service=details.service,
+                    date=details.date,
+                    time=details.time,
+                    barber=details.barber,
                 )
             case _ as unreachable:
                 assert_never(unreachable)
@@ -1084,7 +1119,9 @@ class ConversationService:
                         return self._enter_confirmation(
                             flow=ConversationFlow.RESCHEDULE,
                             slots=slots,
-                            old_date_time=old_dt_str,
+                            details=ConfirmationDetails.from_slots(
+                                slots, self._business_tz, old_date_time=old_dt_str
+                            ),
                         )
                     return (
                         ConversationStage.COLLECTING_BOOKING_DETAILS.value,
@@ -1343,7 +1380,9 @@ class ConversationService:
                             return self._enter_confirmation(
                                 flow=ConversationFlow.RESCHEDULE,
                                 slots=slots,
-                                old_date_time=old_dt_str,
+                                details=ConfirmationDetails.from_slots(
+                                    slots, self._business_tz, old_date_time=old_dt_str
+                                ),
                             )
                         return (
                             ConversationStage.COLLECTING_BOOKING_DETAILS.value,
