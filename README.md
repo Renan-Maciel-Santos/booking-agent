@@ -220,7 +220,7 @@ uv run pytest -m integration      # integration tests against PostgreSQL contain
 uv run pytest                     # complete test suite (281+ tests)
 ```
 
-Integration tests **fail** rather than skip when Docker is unavailable, ensuring missing daemons cannot produce false-positive passes.
+Integration tests **fail** rather than skip when Docker is unavailable, ensuring missing daemons cannot produce false-positive passes. The test suite runs in random order; the seed appears in the test header, and a failure is reproduced with `uv run pytest -p randomly --randomly-seed=<seed>`.
 
 ## Known limitations
 
