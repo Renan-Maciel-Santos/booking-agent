@@ -4,6 +4,7 @@ from datetime import time
 from pathlib import Path
 
 import pytest
+from scripts.demo_conversation import CLOSED_WEEKDAYS
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,21 +59,29 @@ async def test_business_hours_closes_before_opens_rejected(session: AsyncSession
         await repo.upsert(day_of_week=1, opens_at=time(18, 0), closes_at=time(9, 0))
 
 
-async def test_seed_demo_business_hours(session: AsyncSession) -> None:
-    """Verify demo seed SQL file populates Tuesday through Saturday."""
-    seed_path = Path(__file__).parents[2] / "db" / "seeds" / "business_hours.sql"
+async def test_demo_seed_business_hours_match_the_demo_script(session: AsyncSession) -> None:
+    """Verify demo.sql defines business hours consistent with the demo script."""
+    seed_path = Path(__file__).parents[2] / "db" / "seeds" / "demo.sql"
     sql = seed_path.read_text(encoding="utf-8")
-    await session.execute(text(sql))
+    for statement in sql.split(";"):
+        stmt = statement.strip()
+        if stmt:
+            await session.execute(text(stmt))
     await session.commit()
     repo = BusinessHoursRepository(session)
 
-    # Monday (0) and Sunday (6) are closed (None)
-    assert await repo.get_by_day(0) is None
-    assert await repo.get_by_day(6) is None
-
-    # Tuesday (1) through Saturday (5) exist
-    for day in range(1, 6):
+    # Monday (0) through Saturday (5) are open 09:00-19:00
+    for day in range(6):
         hours = await repo.get_by_day(day)
         assert hours is not None
         assert hours.opens_at == time(9, 0)
         assert hours.closes_at == time(19, 0)
+
+    # Sunday (6) is closed
+    assert await repo.get_by_day(6) is None
+
+    # The set of closed weekdays exactly matches CLOSED_WEEKDAYS from the demo script
+    all_hours = await repo.list_all()
+    open_weekdays = {h.day_of_week for h in all_hours}
+    closed_weekdays = set(range(7)) - open_weekdays
+    assert closed_weekdays == set(CLOSED_WEEKDAYS)
