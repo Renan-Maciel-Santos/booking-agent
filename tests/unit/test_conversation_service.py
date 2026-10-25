@@ -2158,3 +2158,107 @@ async def test_invalid_persisted_stage_resets_conversation_and_unblocks_dialogue
     )
     assert resp2 != render_template(TemplateKey.CONVERSATION_RESET)
     assert len(resp2) > 0
+
+
+@pytest.mark.unit
+async def test_booking_with_any_barber_preserves_any_on_reschedule() -> None:
+    """Booking with any barber sets barber_id='any' and preserves it across reschedule."""
+    conv_service, uow_factory, _, intent_parser, _, _, _ = _create_unit_fixtures()
+    phone = "+5511999993333"
+
+    # Add a second active barber so that availability can allocate either barber
+    barber_2_id = uuid.uuid4()
+    uow_factory.store.barbers[barber_2_id] = type(
+        "Brb",
+        (),
+        {
+            "id": barber_2_id,
+            "name": "Bruno Barber",
+            "active": True,
+        },
+    )()
+
+    # Turn 1: Customer requests service with date, time, and explicit "qualquer barbeiro"
+    intent_parser._responses["Quero cortar o cabelo dia 21/11 às 14:00 com qualquer barbeiro"] = (
+        BookingIntent(
+            intent=IntentType.BOOK,
+            service_name="Corte de Cabelo",
+            local_date=date(2026, 11, 21),
+            local_time=time(14, 0),
+            barber_name="qualquer",
+        )
+    )
+    resp1 = await conv_service.handle_message(
+        message_id="msg_bany_1",
+        phone=phone,
+        text="Quero cortar o cabelo dia 21/11 às 14:00 com qualquer barbeiro",
+    )
+    assert "nome" in resp1
+
+    # Verify that the persisted slot in fake has barber_id == "any"
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert slots_to_json(st.slots).get("barber_id") == "any"
+
+    # Turn 2: Customer provides name
+    resp2 = await conv_service.handle_message(
+        message_id="msg_bany_2",
+        phone=phone,
+        text="Renan Maciel",
+    )
+    assert "confirmar" in resp2.lower()
+
+    # Turn 3: Customer confirms booking
+    resp3 = await conv_service.handle_message(
+        message_id="msg_bany_3",
+        phone=phone,
+        text="Sim",
+    )
+    assert "confirmado" in resp3
+
+    # Verify initial appointment was created
+    async with uow_factory() as uow:
+        cust = await uow.customers.get_by_phone(phone)
+        assert cust is not None
+        appts = await uow.appointments.list_by_customer(cust.id)
+        assert len(appts) == 1
+
+    # Turn 4: Customer requests to reschedule to 2026-11-22 15:00
+    intent_parser._responses["Quero remarcar para 22/11 às 15:00"] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        local_date=date(2026, 11, 22),
+        local_time=time(15, 0),
+    )
+    resp4 = await conv_service.handle_message(
+        message_id="msg_bany_4",
+        phone=phone,
+        text="Quero remarcar para 22/11 às 15:00",
+    )
+    assert "confirmar" in resp4.lower()
+
+    # Turn 5: During reschedule confirmation, customer specifies "qualquer barbeiro"
+    intent_parser._responses["pode ser com qualquer barbeiro"] = BookingIntent(
+        intent=IntentType.RESCHEDULE,
+        barber_name="qualquer",
+    )
+    resp5 = await conv_service.handle_message(
+        message_id="msg_bany_5",
+        phone=phone,
+        text="pode ser com qualquer barbeiro",
+    )
+    assert "confirmar" in resp5.lower()
+
+    # Verify that the reschedule slot persisted in fake has barber_id == "any"
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert slots_to_json(st.slots).get("barber_id") == "any"
+
+    # Turn 6: Confirm reschedule
+    resp6 = await conv_service.handle_message(
+        message_id="msg_bany_6",
+        phone=phone,
+        text="Sim",
+    )
+    assert "remarcado com sucesso" in resp6
