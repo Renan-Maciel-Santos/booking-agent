@@ -13,6 +13,7 @@ from booking_agent.config import Settings
 from booking_agent.database.models import Appointment
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
 from booking_agent.domain.conversation_state import (
+    ANY_BARBER,
     ConversationSnapshot,
     slots_from_json,
     slots_to_json,
@@ -369,6 +370,14 @@ def resolve_confirmation(candidate: ConfirmationCandidate, flow: ConversationFlo
             assert_never(unreachable)
 
 
+def _barber_filter(slots: dict[str, Any]) -> uuid.UUID | None:
+    """Extract optional barber UUID filter from slots, returning None for 'any' or unset."""
+    raw_id = slots.get("barber_id")
+    if not raw_id or raw_id == ANY_BARBER:
+        return None
+    return uuid.UUID(str(raw_id))
+
+
 class ConversationService:
     """Multi-turn conversation orchestrator managing dialogue state and booking actions."""
 
@@ -655,7 +664,7 @@ class ConversationService:
             if svc:
                 slots.setdefault("service_name", svc.name)
                 slots.setdefault("service_price_cents", svc.price_cents)
-        if "barber_name" not in slots:
+        if "barber_name" not in slots and slots.get("barber_id") != ANY_BARBER:
             brb = await uow.barbers.get_by_id(appt.barber_id)
             if brb:
                 slots["barber_name"] = brb.name
@@ -1061,7 +1070,7 @@ class ConversationService:
 
         if flow == ConversationFlow.BOOK:
             service_id = uuid.UUID(slots["service_id"])
-            barber_id = uuid.UUID(slots["barber_id"]) if slots.get("barber_id") else None
+            barber_id = _barber_filter(slots)
             target_date = date.fromisoformat(slots["local_date"])
             target_time = time.fromisoformat(slots["local_time"])
             starts_at = localize_datetime(target_date, target_time, self._business_tz)
@@ -1451,7 +1460,7 @@ class ConversationService:
                             raise MissingConfirmationDataError(("old_date_time",))
                     except MissingConfirmationDataError as exc:
                         return self._handle_missing_confirmation_data(phone, slots, exc)
-                    slots["executing_message_id"] = ""
+                    slots.pop("executing_message_id", None)
                     return (
                         ConversationStage.EXECUTING.value,
                         slots,
@@ -1482,7 +1491,7 @@ class ConversationService:
                     res_b = self._entity_resolver.resolve_barber(intent.barber_name, active_barbers)
                     if res_b.matched:
                         if res_b.entity is None:
-                            slots["barber_id"] = None
+                            slots["barber_id"] = ANY_BARBER
                             slots["barber_name"] = None
                         else:
                             slots["barber_id"] = str(res_b.entity.id)
@@ -1759,7 +1768,7 @@ class ConversationService:
             res_b = self._entity_resolver.resolve_barber(barber_query, active_barbers)
             if res_b.matched:
                 if res_b.entity is None:
-                    slots["barber_id"] = None
+                    slots["barber_id"] = ANY_BARBER
                     slots["barber_name"] = None
                 else:
                     slots["barber_id"] = str(res_b.entity.id)
@@ -1836,7 +1845,7 @@ class ConversationService:
         service_id = uuid.UUID(slots["service_id"])
         target_date = date.fromisoformat(slots["local_date"])
         target_time = time.fromisoformat(slots["local_time"])
-        barber_id = uuid.UUID(slots["barber_id"]) if slots.get("barber_id") else None
+        barber_id = _barber_filter(slots)
 
         avail = await self._booking_service.list_availability(
             service_id=service_id,

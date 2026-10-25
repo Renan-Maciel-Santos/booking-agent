@@ -20,6 +20,7 @@ from booking_agent.database.models import (
     ProcessedMessage,
 )
 from booking_agent.database.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from booking_agent.domain.conversation_state import ANY_BARBER
 from booking_agent.domain.enums import ConversationStage
 from booking_agent.domain.models import BookingResult
 from booking_agent.domain.ports import (
@@ -91,7 +92,7 @@ async def test_two_concurrent_confirmations_create_exactly_one_appointment_any_b
         customer_phone = "+5511999990001"
         action_id = uuid.uuid4()
 
-        # Seed conversation_states in AWAITING_CONFIRMATION with any-barber mode (barber_id=None)
+        # Seed conversation_states in AWAITING_CONFIRMATION with any-barber (ANY_BARBER)
         state = ConversationState(
             phone=customer_phone,
             stage=ConversationStage.AWAITING_CONFIRMATION.value,
@@ -102,7 +103,7 @@ async def test_two_concurrent_confirmations_create_exactly_one_appointment_any_b
                 "service_price_cents": 4500,
                 "local_date": local_date_str,
                 "local_time": "14:00:00",
-                "barber_id": None,
+                "barber_id": ANY_BARBER,
                 "barber_name": None,
                 "customer_name": "Renan Maciel",
                 "action_id": str(action_id),
@@ -214,7 +215,7 @@ async def test_replayed_message_id_returns_identical_response_without_side_effec
                 "service_price_cents": 4500,
                 "local_date": "2026-11-20",
                 "local_time": "15:00:00",
-                "barber_id": None,
+                "barber_id": ANY_BARBER,
                 "barber_name": None,
                 "customer_name": "Lucas",
                 "action_id": str(action_id),
@@ -290,7 +291,7 @@ async def test_simulated_crash_between_phase_3_and_phase_4_recovers_cleanly(
                 "service_price_cents": 4500,
                 "local_date": local_date_str,
                 "local_time": "16:00:00",
-                "barber_id": None,
+                "barber_id": ANY_BARBER,
                 "barber_name": None,
                 "customer_name": "Carlos Crash P3",
                 "action_id": str(action_id),
@@ -413,7 +414,7 @@ async def test_simulated_crash_between_phase_4_and_phase_6_recovers_cleanly(
                 "service_price_cents": 4500,
                 "local_date": local_date_str,
                 "local_time": "17:00:00",
-                "barber_id": None,
+                "barber_id": ANY_BARBER,
                 "barber_name": None,
                 "customer_name": "Maria Crash P4",
                 "action_id": str(action_id),
