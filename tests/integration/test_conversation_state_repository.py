@@ -145,6 +145,129 @@ async def test_direct_invalid_json_row_raises_invalid_conversation_state_error(
 
 
 @pytest.mark.integration
+async def test_direct_invalid_stage_row_raises_invalid_conversation_state_error(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A row with unknown stage inserted directly raises InvalidConversationStateError on get."""
+    phone = _random_phone()
+    now_utc = datetime.now(UTC)
+
+    async with session_factory() as session:
+        invalid_row = ConversationState(
+            phone=phone,
+            stage="collecting_info",
+            slots={},
+            created_at=now_utc,
+            updated_at=now_utc,
+        )
+        session.add(invalid_row)
+        await session.commit()
+
+    async with session_factory() as session:
+        repo = ConversationStateRepository(session)
+        with pytest.raises(InvalidConversationStateError) as exc_info:
+            await repo.get(phone)
+
+        assert "stage" in exc_info.value.invalid_fields
+        assert "stage" in str(exc_info.value)
+
+
+@pytest.mark.integration
+async def test_direct_invalid_stage_and_slots_raises_both_in_invalid_fields(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """When both stage and slots are invalid, both field names appear in invalid_fields."""
+    phone = _random_phone()
+    now_utc = datetime.now(UTC)
+
+    async with session_factory() as session:
+        invalid_row = ConversationState(
+            phone=phone,
+            stage="collecting_info",
+            slots={"unknown_slot_key": "val"},
+            created_at=now_utc,
+            updated_at=now_utc,
+        )
+        session.add(invalid_row)
+        await session.commit()
+
+    async with session_factory() as session:
+        repo = ConversationStateRepository(session)
+        with pytest.raises(InvalidConversationStateError) as exc_info:
+            await repo.get(phone)
+
+        assert "stage" in exc_info.value.invalid_fields
+        assert "unknown_slot_key" in exc_info.value.invalid_fields
+
+
+@pytest.mark.integration
+async def test_invalid_persisted_stage_resets_and_unblocks_second_message(
+    session_factory: async_sessionmaker[AsyncSession],
+    integration_settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An invalid persisted stage resets to IDLE, and a subsequent message is processed normally."""
+    phone = _random_phone()
+    now_utc = datetime.now(UTC)
+
+    async with session_factory() as session:
+        invalid_row = ConversationState(
+            phone=phone,
+            stage="collecting_info",
+            slots={},
+            created_at=now_utc,
+            updated_at=now_utc,
+        )
+        session.add(invalid_row)
+        await session.commit()
+
+    clock = FakeClock(now_utc)
+    uow_factory = SqlAlchemyUnitOfWorkFactory(session_factory)
+    booking_service = BookingService(uow_factory, clock, integration_settings)
+    intent_parser = FakeIntentParser(clock=clock)
+    entity_resolver = EntityResolver()
+    conv_service = ConversationService(
+        intent_parser=intent_parser,
+        booking_service=booking_service,
+        entity_resolver=entity_resolver,
+        clock=clock,
+        uow_factory=uow_factory,
+        settings=integration_settings,
+    )
+
+    # First message: triggers recovery, responds with CONVERSATION_RESET, resets state to IDLE
+    with caplog.at_level(logging.ERROR):
+        resp1 = await conv_service.handle_message(
+            message_id="msg_reset_stage_1",
+            phone=phone,
+            text="Oi, quero agendar",
+        )
+
+    assert resp1 == render_template(TemplateKey.CONVERSATION_RESET)
+
+    async with session_factory() as session:
+        row = await session.get(ConversationState, phone)
+        assert row is not None
+        assert row.stage == ConversationStage.IDLE.value
+        assert row.slots == {}
+
+    # Second message: conversation is not stuck; processes normally from IDLE
+    resp2 = await conv_service.handle_message(
+        message_id="msg_reset_stage_2",
+        phone=phone,
+        text="Quero cortar o cabelo",
+    )
+
+    assert resp2 != render_template(TemplateKey.CONVERSATION_RESET)
+    assert len(resp2) > 0
+
+    async with session_factory() as session:
+        row2 = await session.get(ConversationState, phone)
+        assert row2 is not None
+        assert row2.stage != ConversationStage.IDLE.value
+
+
+@pytest.mark.integration
 async def test_invalid_persisted_state_with_client_message_resets_conversation_and_masks_pii(
     session_factory: async_sessionmaker[AsyncSession],
     integration_settings: Settings,

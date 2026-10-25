@@ -359,13 +359,25 @@ class FakeConversationStateRepository:
         if state is None:
             return None
 
+        invalid_fields: list[str] = []
+        parsed_stage: ConversationStage | None = None
+        try:
+            parsed_stage = ConversationStage(state.stage)
+        except ValueError:
+            invalid_fields.append("stage")
+
         try:
             slots = slots_from_json(state.slots)
         except ValidationError as exc:
-            raise InvalidConversationStateError.from_validation_error(exc) from exc
+            raise InvalidConversationStateError.from_validation_error(
+                exc, extra_fields=tuple(invalid_fields)
+            ) from exc
+
+        if invalid_fields or parsed_stage is None:
+            raise InvalidConversationStateError(tuple(invalid_fields))
 
         return ConversationSnapshot(
-            stage=ConversationStage(state.stage),
+            stage=parsed_stage,
             slots=slots,
             updated_at=state.updated_at,
         )

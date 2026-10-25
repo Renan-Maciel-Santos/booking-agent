@@ -35,7 +35,11 @@ from booking_agent.services.entity_resolver import EntityResolver
 from booking_agent.services.templates import TemplateKey, render_template
 from tests.conftest import build_test_settings
 from tests.fakes.fake_clock import FakeClock
-from tests.fakes.fake_uow import FakeUnitOfWorkFactory, InMemoryDataStore
+from tests.fakes.fake_uow import (
+    FakeConversationStateRepository,
+    FakeUnitOfWorkFactory,
+    InMemoryDataStore,
+)
 
 
 def _create_unit_fixtures() -> tuple[
@@ -2114,3 +2118,43 @@ async def test_save_state_with_unknown_key_raises_validation_error() -> None:
                 slots={"unknown_key_123": "value"},
             )
     assert "unknown_key_123" in str(exc_info.value)
+
+
+@pytest.mark.unit
+async def test_invalid_persisted_stage_resets_conversation_and_unblocks_dialogue() -> None:
+    """An unknown persisted stage resets the conversation to IDLE and unblocks the next message."""
+    conv_service, uow_factory, _, intent_parser, _, _, _ = _create_unit_fixtures()
+    phone = "+5511999998888"
+
+    async with uow_factory() as uow:
+        assert isinstance(uow.conversation_states, FakeConversationStateRepository)
+        uow.conversation_states.seed_raw(
+            phone=phone,
+            stage="collecting_info",
+            slots={},
+        )
+
+    resp1 = await conv_service.handle_message(
+        message_id="msg_unknown_stage_1",
+        phone=phone,
+        text="Oi",
+    )
+    assert resp1 == render_template(TemplateKey.CONVERSATION_RESET)
+
+    async with uow_factory() as uow:
+        st = await uow.conversation_states.get(phone)
+        assert st is not None
+        assert st.stage == ConversationStage.IDLE
+        assert slots_to_json(st.slots) == {}
+
+    intent_parser._responses["Quero cortar o cabelo"] = BookingIntent(
+        intent=IntentType.BOOK,
+        service_name="Corte de Cabelo",
+    )
+    resp2 = await conv_service.handle_message(
+        message_id="msg_unknown_stage_2",
+        phone=phone,
+        text="Quero cortar o cabelo",
+    )
+    assert resp2 != render_template(TemplateKey.CONVERSATION_RESET)
+    assert len(resp2) > 0

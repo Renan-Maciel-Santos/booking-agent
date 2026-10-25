@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+from pydantic import ValidationError
+
 
 class DomainError(Exception):
     """Base class for all domain errors."""
@@ -128,15 +130,17 @@ class InvalidConversationStateError(DomainError):
         self.invalid_fields = invalid_fields
 
     @classmethod
-    def from_validation_error(cls, exc: Exception) -> "InvalidConversationStateError":
+    def from_validation_error(
+        cls,
+        exc: ValidationError,
+        extra_fields: tuple[str, ...] = (),
+    ) -> "InvalidConversationStateError":
         """Extract only field names from Pydantic validation error, masking all input values."""
-        errors_fn = getattr(exc, "errors", None)
-        fields: list[str] = []
-        if callable(errors_fn):
-            for err in errors_fn():
-                loc = err.get("loc")
-                if loc:
-                    field_name = str(loc[0])
-                    if field_name not in fields:
-                        fields.append(field_name)
+        fields: list[str] = list(extra_fields)
+        for err in exc.errors():
+            loc = err.get("loc")
+            if loc:
+                field_name = str(loc[0])
+                if field_name not in fields:
+                    fields.append(field_name)
         return cls(tuple(fields))
