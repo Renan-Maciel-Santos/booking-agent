@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from booking_agent.domain.conversation_state import ConversationSlots
+from booking_agent.domain.enums import ConversationStage
 from booking_agent.repositories.appointment_repository import AppointmentRepository
 from booking_agent.repositories.barber_repository import BarberRepository
 from booking_agent.repositories.conversation_state_repository import ConversationStateRepository
@@ -106,12 +108,20 @@ async def test_conversation_state_updated_at_advances_on_upsert(session: AsyncSe
     repo = ConversationStateRepository(session)
     phone = _random_phone()
 
-    initial = await repo.upsert(phone=phone, stage="idle", slots={})
+    initial = await repo.upsert(
+        phone=phone,
+        stage=ConversationStage.IDLE,
+        slots=ConversationSlots(),
+    )
     await session.commit()
     t0 = initial.updated_at
 
     await asyncio.sleep(0.05)
-    updated = await repo.upsert(phone=phone, stage="collecting_info", slots={"service": "haircut"})
+    updated = await repo.upsert(
+        phone=phone,
+        stage=ConversationStage.COLLECTING_BOOKING_DETAILS,
+        slots=ConversationSlots(service_name="haircut"),
+    )
     await session.commit()
 
     assert updated.updated_at > t0

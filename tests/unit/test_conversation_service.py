@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
+from pydantic import ValidationError
 
 from booking_agent.config import Settings
 from booking_agent.database.models import Appointment, Customer
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
+from booking_agent.domain.conversation_state import slots_from_json, slots_to_json
 from booking_agent.domain.enums import (
     AppointmentStatus,
     ConfirmationCandidate,
@@ -114,8 +116,8 @@ async def test_ttl_expiration_with_was_in_progress_returns_session_expired() -> 
     async with uow_factory() as uow:
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.COLLECTING_BOOKING_DETAILS.value,
-            slots={"service_id": str(svc_id)},
+            stage=ConversationStage.COLLECTING_BOOKING_DETAILS,
+            slots=slots_from_json({"service_id": str(svc_id)}),
         )
     uow_factory.store.conversation_states[phone].updated_at = stale_time
 
@@ -131,7 +133,7 @@ async def test_ttl_expiration_with_was_in_progress_returns_session_expired() -> 
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.IDLE.value
-        assert st.slots == {}
+        assert slots_to_json(st.slots) == {}
 
 
 @pytest.mark.unit
@@ -145,8 +147,8 @@ async def test_ttl_expiration_when_idle_does_not_show_expired_warning() -> None:
     async with uow_factory() as uow:
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.IDLE.value,
-            slots={},
+            stage=ConversationStage.IDLE,
+            slots=slots_from_json({}),
         )
     uow_factory.store.conversation_states[phone].updated_at = stale_time
 
@@ -222,13 +224,15 @@ async def test_fast_path_negative_cancels_awaiting_confirmation_flow() -> None:
     async with uow_factory() as uow:
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.AWAITING_CONFIRMATION.value,
-            slots={
-                "flow": "book",
-                "service_id": str(svc_id),
-                "service_name": "Corte de Cabelo",
-                "action_id": str(uuid.uuid4()),
-            },
+            stage=ConversationStage.AWAITING_CONFIRMATION,
+            slots=slots_from_json(
+                {
+                    "flow": "book",
+                    "service_id": str(svc_id),
+                    "service_name": "Corte de Cabelo",
+                    "action_id": str(uuid.uuid4()),
+                }
+            ),
         )
 
     resp = await conv_service.handle_message(
@@ -242,7 +246,7 @@ async def test_fast_path_negative_cancels_awaiting_confirmation_flow() -> None:
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.IDLE.value
-        assert st.slots == {}
+        assert slots_to_json(st.slots) == {}
 
 
 @pytest.mark.unit
@@ -420,16 +424,18 @@ async def test_customer_name_only_accepted_when_awaiting_and_valid() -> None:
     async with uow_factory() as uow:
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.COLLECTING_BOOKING_DETAILS.value,
-            slots={
-                "flow": "book",
-                "service_id": str(svc_id),
-                "service_name": "Corte de Cabelo",
-                "service_price_cents": 4500,
-                "local_date": "2026-11-21",
-                "local_time": "15:00:00",
-                "awaiting": "customer_name",
-            },
+            stage=ConversationStage.COLLECTING_BOOKING_DETAILS,
+            slots=slots_from_json(
+                {
+                    "flow": "book",
+                    "service_id": str(svc_id),
+                    "service_name": "Corte de Cabelo",
+                    "service_price_cents": 4500,
+                    "local_date": "2026-11-21",
+                    "local_time": "15:00:00",
+                    "awaiting": "customer_name",
+                }
+            ),
         )
 
     # 1. User replies with a time change question: "na verdade pode ser às 16h?"
@@ -447,9 +453,10 @@ async def test_customer_name_only_accepted_when_awaiting_and_valid() -> None:
     async with uow_factory() as uow:
         st1 = await uow.conversation_states.get(phone)
         assert st1 is not None
-        assert "customer_name" not in st1.slots
-        assert st1.slots.get("local_time") == "16:00:00"
-        assert st1.slots.get("awaiting") == "customer_name"
+        st1_slots = slots_to_json(st1.slots)
+        assert "customer_name" not in st1_slots
+        assert st1_slots.get("local_time") == "16:00:00"
+        assert st1_slots.get("awaiting") == "customer_name"
 
     # 2. User asks for price: "qual o valor?"
     resp2 = await conv_service.handle_message(
@@ -461,8 +468,9 @@ async def test_customer_name_only_accepted_when_awaiting_and_valid() -> None:
     async with uow_factory() as uow:
         st2 = await uow.conversation_states.get(phone)
         assert st2 is not None
-        assert "customer_name" not in st2.slots
-        assert st2.slots.get("awaiting") == "customer_name"
+        st2_slots = slots_to_json(st2.slots)
+        assert "customer_name" not in st2_slots
+        assert st2_slots.get("awaiting") == "customer_name"
 
     # 3. User provides valid name: "Maria Clara"
     resp3 = await conv_service.handle_message(
@@ -477,8 +485,9 @@ async def test_customer_name_only_accepted_when_awaiting_and_valid() -> None:
         st3 = await uow.conversation_states.get(phone)
         assert st3 is not None
         assert st3.stage == ConversationStage.AWAITING_CONFIRMATION.value
-        assert st3.slots.get("customer_name") == "Maria Clara"
-        assert "awaiting" not in st3.slots
+        st3_slots = slots_to_json(st3.slots)
+        assert st3_slots.get("customer_name") == "Maria Clara"
+        assert "awaiting" not in st3_slots
 
 
 @pytest.mark.unit
@@ -522,17 +531,19 @@ async def test_pode_cancelar_during_booking_confirmation_aborts_without_booking(
     async with uow_factory() as uow:
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.AWAITING_CONFIRMATION.value,
-            slots={
-                "flow": "book",
-                "service_id": str(svc_id),
-                "service_name": "Corte de Cabelo",
-                "barber_id": str(barber_id),
-                "local_date": "2026-11-21",
-                "local_time": "15:00:00",
-                "customer_name": "Cliente Teste",
-                "action_id": str(action_id),
-            },
+            stage=ConversationStage.AWAITING_CONFIRMATION,
+            slots=slots_from_json(
+                {
+                    "flow": "book",
+                    "service_id": str(svc_id),
+                    "service_name": "Corte de Cabelo",
+                    "barber_id": str(barber_id),
+                    "local_date": "2026-11-21",
+                    "local_time": "15:00:00",
+                    "customer_name": "Cliente Teste",
+                    "action_id": str(action_id),
+                }
+            ),
         )
 
     resp = await conv_service.handle_message(
@@ -548,7 +559,7 @@ async def test_pode_cancelar_during_booking_confirmation_aborts_without_booking(
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.IDLE.value
-        assert st.slots == {}
+        assert slots_to_json(st.slots) == {}
 
         # No appointment must exist
         cust = await uow.customers.get_by_phone(phone)
@@ -615,18 +626,20 @@ async def test_confirmado_and_confirmada_remain_affirmative_for_booking(
     async with uow_factory() as uow:
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.AWAITING_CONFIRMATION.value,
-            slots={
-                "flow": "book",
-                "service_id": str(svc_id),
-                "service_name": "Corte de Cabelo",
-                "barber_id": str(barber_id),
-                "local_date": "2026-11-21",
-                "local_time": "15:00:00",
-                "customer_name": "Cliente Confirmado",
-                "service_price_cents": 4500,
-                "action_id": str(action_id),
-            },
+            stage=ConversationStage.AWAITING_CONFIRMATION,
+            slots=slots_from_json(
+                {
+                    "flow": "book",
+                    "service_id": str(svc_id),
+                    "service_name": "Corte de Cabelo",
+                    "barber_id": str(barber_id),
+                    "local_date": "2026-11-21",
+                    "local_time": "15:00:00",
+                    "customer_name": "Cliente Confirmado",
+                    "service_price_cents": 4500,
+                    "action_id": str(action_id),
+                }
+            ),
         )
 
     resp = await conv_service.handle_message(
@@ -676,7 +689,7 @@ async def test_awaiting_confirmation_persists_flow_idle_cancel() -> None:
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
-        assert st.slots.get("flow") == ConversationFlow.CANCEL.value
+        assert slots_to_json(st.slots).get("flow") == ConversationFlow.CANCEL.value
 
 
 @pytest.mark.unit
@@ -715,7 +728,7 @@ async def test_awaiting_confirmation_persists_flow_idle_reschedule_with_datetime
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
-        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+        assert slots_to_json(st.slots).get("flow") == ConversationFlow.RESCHEDULE.value
 
 
 @pytest.mark.unit
@@ -739,11 +752,13 @@ async def test_awaiting_confirmation_persists_flow_choosing_cancel() -> None:
         )
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.CHOOSING_APPOINTMENT.value,
-            slots={
-                "flow": ConversationFlow.CANCEL.value,
-                "candidate_appointment_ids": [str(appt1.id)],
-            },
+            stage=ConversationStage.CHOOSING_APPOINTMENT,
+            slots=slots_from_json(
+                {
+                    "flow": ConversationFlow.CANCEL.value,
+                    "candidate_appointment_ids": [str(appt1.id)],
+                }
+            ),
         )
 
     resp = await conv_service.handle_message(
@@ -757,7 +772,7 @@ async def test_awaiting_confirmation_persists_flow_choosing_cancel() -> None:
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
-        assert st.slots.get("flow") == ConversationFlow.CANCEL.value
+        assert slots_to_json(st.slots).get("flow") == ConversationFlow.CANCEL.value
 
 
 @pytest.mark.unit
@@ -781,11 +796,13 @@ async def test_awaiting_confirmation_persists_flow_choosing_reschedule_with_date
         )
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.CHOOSING_APPOINTMENT.value,
-            slots={
-                "flow": ConversationFlow.RESCHEDULE.value,
-                "candidate_appointment_ids": [str(appt1.id)],
-            },
+            stage=ConversationStage.CHOOSING_APPOINTMENT,
+            slots=slots_from_json(
+                {
+                    "flow": ConversationFlow.RESCHEDULE.value,
+                    "candidate_appointment_ids": [str(appt1.id)],
+                }
+            ),
         )
 
     intent_parser._responses["1 para amanha as 14h"] = BookingIntent(
@@ -803,7 +820,7 @@ async def test_awaiting_confirmation_persists_flow_choosing_reschedule_with_date
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
-        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+        assert slots_to_json(st.slots).get("flow") == ConversationFlow.RESCHEDULE.value
 
 
 @pytest.mark.unit
@@ -827,12 +844,14 @@ async def test_awaiting_confirmation_persists_flow_collecting_reschedule() -> No
         )
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.COLLECTING_BOOKING_DETAILS.value,
-            slots={
-                "flow": ConversationFlow.RESCHEDULE.value,
-                "appointment_id": str(appt.id),
-                "service_name": "Corte de Cabelo",
-            },
+            stage=ConversationStage.COLLECTING_BOOKING_DETAILS,
+            slots=slots_from_json(
+                {
+                    "flow": ConversationFlow.RESCHEDULE.value,
+                    "appointment_id": str(appt.id),
+                    "service_name": "Corte de Cabelo",
+                }
+            ),
         )
 
     intent_parser._responses["amanha as 15h"] = BookingIntent(
@@ -850,7 +869,7 @@ async def test_awaiting_confirmation_persists_flow_collecting_reschedule() -> No
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
-        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+        assert slots_to_json(st.slots).get("flow") == ConversationFlow.RESCHEDULE.value
 
 
 @pytest.mark.unit
@@ -875,13 +894,15 @@ async def test_awaiting_confirmation_persists_flow_offering_alternatives() -> No
         alt_dt = clock.now() + timedelta(days=2)
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.OFFERING_ALTERNATIVES.value,
-            slots={
-                "flow": ConversationFlow.RESCHEDULE.value,
-                "appointment_id": str(appt.id),
-                "service_name": "Corte de Cabelo",
-                "alternative_slots": [alt_dt.isoformat()],
-            },
+            stage=ConversationStage.OFFERING_ALTERNATIVES,
+            slots=slots_from_json(
+                {
+                    "flow": ConversationFlow.RESCHEDULE.value,
+                    "appointment_id": str(appt.id),
+                    "service_name": "Corte de Cabelo",
+                    "alternative_slots": [alt_dt.isoformat()],
+                }
+            ),
         )
 
     resp = await conv_service.handle_message(
@@ -895,7 +916,7 @@ async def test_awaiting_confirmation_persists_flow_offering_alternatives() -> No
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
-        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+        assert slots_to_json(st.slots).get("flow") == ConversationFlow.RESCHEDULE.value
 
 
 @pytest.mark.unit
@@ -909,18 +930,20 @@ async def test_awaiting_confirmation_persists_flow_collecting_booking() -> None:
     async with uow_factory() as uow:
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.COLLECTING_BOOKING_DETAILS.value,
-            slots={
-                "flow": ConversationFlow.BOOK.value,
-                "service_id": str(svc_id),
-                "service_name": "Corte de Cabelo",
-                "service_price_cents": 4500,
-                "barber_id": str(barber_id),
-                "barber_name": "Carlos Barber",
-                "local_date": "2026-11-21",
-                "local_time": "14:00:00",
-                "awaiting": "customer_name",
-            },
+            stage=ConversationStage.COLLECTING_BOOKING_DETAILS,
+            slots=slots_from_json(
+                {
+                    "flow": ConversationFlow.BOOK.value,
+                    "service_id": str(svc_id),
+                    "service_name": "Corte de Cabelo",
+                    "service_price_cents": 4500,
+                    "barber_id": str(barber_id),
+                    "barber_name": "Carlos Barber",
+                    "local_date": "2026-11-21",
+                    "local_time": "14:00:00",
+                    "awaiting": "customer_name",
+                }
+            ),
         )
 
     resp = await conv_service.handle_message(
@@ -934,7 +957,7 @@ async def test_awaiting_confirmation_persists_flow_collecting_booking() -> None:
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
-        assert st.slots.get("flow") == ConversationFlow.BOOK.value
+        assert slots_to_json(st.slots).get("flow") == ConversationFlow.BOOK.value
 
 
 @pytest.mark.unit
@@ -952,15 +975,17 @@ async def test_awaiting_confirmation_missing_flow_fails_safe_and_logs_error(
         # Seed AWAITING_CONFIRMATION state with action_id but MISSING 'flow'
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.AWAITING_CONFIRMATION.value,
-            slots={
-                "action_id": str(action_id),
-                "service_id": str(svc_id),
-                "barber_id": str(barber_id),
-                "local_date": "2026-11-21",
-                "local_time": "14:00:00",
-                "customer_name": "Cliente Sem Flow",
-            },
+            stage=ConversationStage.AWAITING_CONFIRMATION,
+            slots=slots_from_json(
+                {
+                    "action_id": str(action_id),
+                    "service_id": str(svc_id),
+                    "barber_id": str(barber_id),
+                    "local_date": "2026-11-21",
+                    "local_time": "14:00:00",
+                    "customer_name": "Cliente Sem Flow",
+                }
+            ),
         )
 
     with caplog.at_level(logging.ERROR):
@@ -978,7 +1003,7 @@ async def test_awaiting_confirmation_missing_flow_fails_safe_and_logs_error(
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.IDLE.value
-        assert st.slots == {}
+        assert slots_to_json(st.slots) == {}
 
         # 3. No appointment was created or executed
         cust = await uow.customers.get_by_phone(phone)
@@ -1105,7 +1130,7 @@ async def test_cancel_confirmation_negative_keeps_active_and_avoids_cancelad() -
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.IDLE.value
-        assert st.slots == {}
+        assert slots_to_json(st.slots) == {}
 
 
 @pytest.mark.unit
@@ -1142,18 +1167,20 @@ async def test_unrecognized_reply_during_cancel_confirmation_never_executes(
         action_id = uuid.uuid4()
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.AWAITING_CONFIRMATION.value,
-            slots={
-                "flow": ConversationFlow.CANCEL.value,
-                "appointment_id": str(appt.id),
-                "action_id": str(action_id),
-                "service_id": str(svc_id),
-                "barber_id": str(barber_id),
-                "service_name": "Corte de Cabelo",
-                "barber_name": "Carlos Barber",
-                "local_date": target_dt.date().isoformat(),
-                "local_time": target_dt.time().isoformat(),
-            },
+            stage=ConversationStage.AWAITING_CONFIRMATION,
+            slots=slots_from_json(
+                {
+                    "flow": ConversationFlow.CANCEL.value,
+                    "appointment_id": str(appt.id),
+                    "action_id": str(action_id),
+                    "service_id": str(svc_id),
+                    "barber_id": str(barber_id),
+                    "service_name": "Corte de Cabelo",
+                    "barber_name": "Carlos Barber",
+                    "local_date": target_dt.date().isoformat(),
+                    "local_time": target_dt.time().isoformat(),
+                }
+            ),
         )
 
     unrecognized_text = "não pode cancelar"
@@ -1190,7 +1217,7 @@ async def test_unrecognized_reply_during_cancel_confirmation_never_executes(
         assert appt_after.status == AppointmentStatus.CONFIRMED
     else:
         assert st.stage == ConversationStage.AWAITING_CONFIRMATION.value
-        assert st.slots.get("flow") == ConversationFlow.RESCHEDULE.value
+        assert slots_to_json(st.slots).get("flow") == ConversationFlow.RESCHEDULE.value
         assert turn_result.response_text is not None
         assert "Podemos confirmar a remarcação" in turn_result.response_text
 
@@ -1793,11 +1820,27 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
         )
         slots["appointment_id"] = str(appt_other_id)
 
+    if reason == "invalid_id":
+        async with uow_factory() as uow:
+            with caplog.at_level(logging.ERROR):
+                origin = await conv_service._load_reschedule_origin(uow, phone, slots)
+            assert origin is None
+            error_logs = [
+                rec
+                for rec in caplog.records
+                if rec.levelno == logging.ERROR
+                and getattr(rec, "event", None) == "invalid_reschedule_origin"
+            ]
+            assert len(error_logs) == 1
+            assert getattr(error_logs[0], "reason", None) == "invalid_id"
+            assert getattr(error_logs[0], "phone_last4", None) == mask_phone(phone)
+        return
+
     async with uow_factory() as uow:
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.AWAITING_CONFIRMATION.value,
-            slots=slots,
+            stage=ConversationStage.AWAITING_CONFIRMATION,
+            slots=slots_from_json(slots),
         )
 
     mock_book = AsyncMock()
@@ -1826,7 +1869,7 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.IDLE.value
-        assert st.slots == {}
+        assert slots_to_json(st.slots) == {}
 
     mock_book.assert_not_called()
     mock_reschedule.assert_not_called()
@@ -1916,16 +1959,18 @@ async def test_incomplete_slots_in_awaiting_confirmation_fails_safe(
     async with uow_factory() as uow:
         await uow.conversation_states.upsert(
             phone=phone,
-            stage=ConversationStage.AWAITING_CONFIRMATION.value,
-            slots={
-                "flow": ConversationFlow.BOOK.value,
-                "action_id": str(uuid.uuid4()),
-                # missing customer_name and service_price_cents
-                "service_id": str(svc_id),
-                "barber_id": str(barber_id),
-                "local_date": "2026-10-25",
-                "local_time": "14:00:00",
-            },
+            stage=ConversationStage.AWAITING_CONFIRMATION,
+            slots=slots_from_json(
+                {
+                    "flow": ConversationFlow.BOOK.value,
+                    "action_id": str(uuid.uuid4()),
+                    # missing customer_name and service_price_cents
+                    "service_id": str(svc_id),
+                    "barber_id": str(barber_id),
+                    "local_date": "2026-10-25",
+                    "local_time": "14:00:00",
+                }
+            ),
         )
 
     mock_book = AsyncMock()
@@ -1948,7 +1993,7 @@ async def test_incomplete_slots_in_awaiting_confirmation_fails_safe(
         st = await uow.conversation_states.get(phone)
         assert st is not None
         assert st.stage == ConversationStage.IDLE.value
-        assert st.slots == {}
+        assert slots_to_json(st.slots) == {}
 
     mock_book.assert_not_called()
     mock_reschedule.assert_not_called()
@@ -2052,3 +2097,20 @@ def test_confirmation_details_from_slots_rejects_alias_only_slots() -> None:
     with pytest.raises(MissingConfirmationDataError) as exc_info:
         ConfirmationDetails.from_slots(alias_slots, tz)
     assert set(exc_info.value.missing_fields) == {"service", "date", "time", "name", "price"}
+
+
+@pytest.mark.unit
+async def test_save_state_with_unknown_key_raises_validation_error() -> None:
+    """Invalid slot state during save indicates a programmer error and fails fast."""
+    conv_service, uow_factory, _, _, _, _, _ = _create_unit_fixtures()
+    phone = "+5511999998888"
+
+    async with uow_factory() as uow:
+        with pytest.raises(ValidationError) as exc_info:
+            await conv_service._save_state(
+                uow=uow,
+                phone=phone,
+                stage=ConversationStage.IDLE.value,
+                slots={"unknown_key_123": "value"},
+            )
+    assert "unknown_key_123" in str(exc_info.value)
