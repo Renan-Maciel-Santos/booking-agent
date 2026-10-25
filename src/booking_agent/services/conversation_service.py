@@ -1372,7 +1372,6 @@ class ConversationService:
                         slots["service_id"] = str(res_s.entity.id)
                         slots["service_name"] = res_s.entity.name
                         slots["service_price_cents"] = res_s.entity.price_cents
-                        slots["service_duration_minutes"] = res_s.entity.duration_minutes
                         has_updates = True
 
                 if intent.barber_name:
@@ -1640,7 +1639,6 @@ class ConversationService:
                 slots["service_id"] = str(res_s.entity.id)
                 slots["service_name"] = res_s.entity.name
                 slots["service_price_cents"] = res_s.entity.price_cents
-                slots["service_duration_minutes"] = res_s.entity.duration_minutes
             else:
                 svc_list = ", ".join(
                     f"{s.name} ({format_currency_brl(s.price_cents)})" for s in active_services
