@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from booking_agent.domain.conversation_state import (
+    ANY_BARBER,
     slots_from_json,
     slots_to_json,
 )
@@ -28,7 +29,7 @@ from booking_agent.domain.errors import InvalidConversationStateError
                 "service_id": "11111111-1111-1111-1111-111111111111",
                 "service_name": "Corte de Cabelo",
                 "service_price_cents": 4500,
-                "barber_id": None,
+                "barber_id": ANY_BARBER,
                 "barber_name": None,
                 "local_date": "2026-11-20",
                 "local_time": "14:00:00",
@@ -59,7 +60,7 @@ from booking_agent.domain.errors import InvalidConversationStateError
                 "service_id": "11111111-1111-1111-1111-111111111111",
                 "service_name": "Corte de Cabelo",
                 "service_price_cents": 4500,
-                "barber_id": None,
+                "barber_id": ANY_BARBER,
                 "barber_name": None,
                 "local_date": "2026-11-21",
                 "local_time": "15:30:00",
@@ -112,9 +113,9 @@ def test_conversation_slots_round_trip_for_all_stages(
 
 
 @pytest.mark.unit
-def test_conversation_slots_round_trip_with_empty_executing_message_id() -> None:
-    """Empty string sentinel for executing_message_id survives round-trip identically."""
-    data = {"executing_message_id": ""}
+def test_conversation_slots_round_trip_with_any_barber() -> None:
+    """Explicit 'any' value for barber_id survives round-trip identically."""
+    data = {"barber_id": ANY_BARBER}
     assert slots_to_json(slots_from_json(data)) == data
 
 
@@ -129,6 +130,8 @@ def test_conversation_slots_round_trip_with_empty_executing_message_id() -> None
         {"flow": "x"},
         {"awaiting": "foo"},
         {"service_price_cents": -1},
+        {"executing_message_id": ""},
+        {"barber_id": "qualquer"},
     ],
 )
 def test_conversation_slots_rejection(invalid_data: dict[str, Any]) -> None:

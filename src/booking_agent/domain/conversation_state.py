@@ -2,12 +2,14 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from typing import Any, Literal
+from typing import Any, Final, Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from booking_agent.domain.enums import ConversationFlow, ConversationStage
+
+ANY_BARBER: Final = "any"
 
 
 class ConversationSlots(BaseModel):
@@ -21,12 +23,12 @@ class ConversationSlots(BaseModel):
 
     flow: ConversationFlow | None = None
     action_id: UUID | None = None
-    executing_message_id: str | None = None
+    executing_message_id: str | None = Field(default=None, min_length=1)
     awaiting: Literal["service", "date_time", "customer_name"] | None = None
     service_id: UUID | None = None
     service_name: str | None = None
     service_price_cents: int | None = Field(default=None, ge=0)
-    barber_id: UUID | None = None
+    barber_id: UUID | Literal["any"] | None = None
     barber_name: str | None = None
     local_date: date | None = None
     local_time: time | None = None
