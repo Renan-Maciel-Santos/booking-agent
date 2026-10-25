@@ -128,9 +128,6 @@ docker compose build app
 ```
 Builds the container image, ensuring that both database migrations and the API run the latest application code.
 
-> [!TIP]
-> If starting PostgreSQL fails with `Bind for 127.0.0.1:5432 failed: port is already allocated`, port 5432 is already in use by another service on your host. Change `POSTGRES_HOST_PORT=5433` (or any available port) in `.env` to resolve the collision.
-
 ### 3. Start PostgreSQL container
 ```bash
 docker compose up -d db
@@ -177,15 +174,20 @@ uv run python scripts/demo_conversation.py --idempotency-check
 
 ## Local development
 
-Commands executed locally on the host via `uv` (such as running migrations or the API directly) connect to PostgreSQL outside the Docker network. They require `POSTGRES_HOST=localhost` and require `POSTGRES_PORT` to match `POSTGRES_HOST_PORT` from `.env` whenever the host port mapping differs from `5432`:
+Direct database access from the host (such as running migrations or the API directly via `uv`) requires starting the database container with the optional development compose file to expose the PostgreSQL port:
 
 ```bash
+# Start PostgreSQL with host port exposure
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
+
 # Apply migrations locally
 uv run alembic upgrade head
 
 # Start API server locally with auto-reload
 uv run uvicorn booking_agent.main:create_app --factory --reload
 ```
+
+Commands executed on the host connect to PostgreSQL outside the Docker network. They require `POSTGRES_HOST=localhost` and require `POSTGRES_PORT` to match `POSTGRES_HOST_PORT` from `.env` whenever the host port mapping differs from `5432`.
 
 ## Tech stack
 

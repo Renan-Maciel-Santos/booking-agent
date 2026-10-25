@@ -7,9 +7,6 @@ services:
     # Named volume so data survives container recreation.
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # Bind to localhost only: the database is never exposed on the network.
-    ports:
-      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     # Mark the service healthy only when it accepts connections.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]

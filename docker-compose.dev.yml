@@ -1,0 +1,7 @@
+# Optional compose file for local development and direct database access from the host (local tools, SQL clients).
+# Exposes the PostgreSQL port to the host machine:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
+services:
+  db:
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
