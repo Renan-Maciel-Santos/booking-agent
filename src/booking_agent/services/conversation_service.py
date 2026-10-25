@@ -95,11 +95,11 @@ class ConfirmationDetails:
         """Build ConfirmationDetails from conversation slots, validating mandatory fields."""
         missing: list[str] = []
 
-        service_val = slots.get("service_name") or slots.get("service")
+        service_val = slots.get("service_name")
         if not service_val:
             missing.append("service")
 
-        raw_date = slots.get("local_date") or slots.get("date")
+        raw_date = slots.get("local_date")
         formatted_date: str | None = None
         if not raw_date:
             missing.append("date")
@@ -109,11 +109,11 @@ class ConfirmationDetails:
             try:
                 formatted_date = format_short_date_pt_br(date.fromisoformat(raw_date))
             except ValueError:
-                formatted_date = raw_date
+                missing.append("date")
         else:
             missing.append("date")
 
-        raw_time = slots.get("local_time") or slots.get("time")
+        raw_time = slots.get("local_time")
         formatted_time: str | None = None
         if not raw_time:
             missing.append("time")
@@ -123,11 +123,11 @@ class ConfirmationDetails:
             try:
                 formatted_time = format_time_pt_br(time.fromisoformat(raw_time))
             except ValueError:
-                formatted_time = raw_time
+                missing.append("time")
         else:
             missing.append("time")
 
-        name_val = slots.get("customer_name") or slots.get("name")
+        name_val = slots.get("customer_name")
         if not name_val:
             missing.append("name")
 
@@ -135,8 +135,6 @@ class ConfirmationDetails:
         formatted_price: str | None = None
         if raw_price is not None and isinstance(raw_price, int):
             formatted_price = format_currency_brl(raw_price)
-        elif slots.get("price") is not None:
-            formatted_price = str(slots["price"])
         else:
             missing.append("price")
 
@@ -150,9 +148,7 @@ class ConfirmationDetails:
         ):
             raise MissingConfirmationDataError(tuple(missing))
 
-        barber_val = (
-            slots.get("barber_name") or slots.get("barber") or "qualquer barbeiro disponível"
-        )
+        barber_val = slots.get("barber_name") or "qualquer barbeiro disponível"
         old_dt_val = slots.get("old_date_time")
 
         return cls(

@@ -111,7 +111,7 @@ class ActionAlreadyExistsError(DomainError):
 
 
 class MissingConfirmationDataError(DomainError):
-    """Raised when mandatory confirmation details are missing from conversation state."""
+    """Raised when mandatory confirmation details are missing or malformed in conversation state."""
 
     def __init__(self, missing_fields: tuple[str, ...]) -> None:
         """Initialize with tuple of missing field names."""

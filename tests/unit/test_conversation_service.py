@@ -1980,3 +1980,77 @@ def test_no_confirmation_prompt_contains_zero_price_or_empty_datetime(
     )
     assert "R$ 0,00" not in prompt
     assert " às  " not in prompt
+
+
+@pytest.mark.unit
+def test_confirmation_details_from_slots_valid_canonical() -> None:
+    """Canonical slot keys produce the expected ConfirmationDetails."""
+    tz = ZoneInfo("America/Sao_Paulo")
+    slots = {
+        "service_name": "Corte de Cabelo",
+        "local_date": "2026-10-26",
+        "local_time": "15:00:00",
+        "customer_name": "Renan Maciel",
+        "service_price_cents": 4500,
+        "barber_name": "Bruno",
+    }
+    details = ConfirmationDetails.from_slots(slots, tz)
+    assert details.service == "Corte de Cabelo"
+    assert details.date == "26/10"
+    assert details.time == "15:00"
+    assert details.name == "Renan Maciel"
+    assert details.price == "R$ 45,00"
+    assert details.barber == "Bruno"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid_date", ["amanha", "2026-13-45"])
+def test_confirmation_details_from_slots_rejects_malformed_date(invalid_date: str) -> None:
+    """Malformed local_date values fail with 'date' in missing_fields."""
+    tz = ZoneInfo("America/Sao_Paulo")
+    slots = {
+        "service_name": "Corte de Cabelo",
+        "local_date": invalid_date,
+        "local_time": "15:00:00",
+        "customer_name": "Renan Maciel",
+        "service_price_cents": 4500,
+        "barber_name": "Bruno",
+    }
+    with pytest.raises(MissingConfirmationDataError) as exc_info:
+        ConfirmationDetails.from_slots(slots, tz)
+    assert "date" in exc_info.value.missing_fields
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid_time", ["25:99", "15h"])
+def test_confirmation_details_from_slots_rejects_malformed_time(invalid_time: str) -> None:
+    """Malformed local_time values fail with 'time' in missing_fields."""
+    tz = ZoneInfo("America/Sao_Paulo")
+    slots = {
+        "service_name": "Corte de Cabelo",
+        "local_date": "2026-10-26",
+        "local_time": invalid_time,
+        "customer_name": "Renan Maciel",
+        "service_price_cents": 4500,
+        "barber_name": "Bruno",
+    }
+    with pytest.raises(MissingConfirmationDataError) as exc_info:
+        ConfirmationDetails.from_slots(slots, tz)
+    assert "time" in exc_info.value.missing_fields
+
+
+@pytest.mark.unit
+def test_confirmation_details_from_slots_rejects_alias_only_slots() -> None:
+    """Slots containing only legacy alias keys are rejected listing all mandatory fields."""
+    tz = ZoneInfo("America/Sao_Paulo")
+    alias_slots = {
+        "service": "Corte de Cabelo",
+        "date": "2026-10-26",
+        "time": "15:00:00",
+        "name": "Renan Maciel",
+        "price": "R$ 45,00",
+        "barber": "Bruno",
+    }
+    with pytest.raises(MissingConfirmationDataError) as exc_info:
+        ConfirmationDetails.from_slots(alias_slots, tz)
+    assert set(exc_info.value.missing_fields) == {"service", "date", "time", "name", "price"}
