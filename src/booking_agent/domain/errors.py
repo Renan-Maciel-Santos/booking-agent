@@ -117,3 +117,26 @@ class MissingConfirmationDataError(DomainError):
         """Initialize with tuple of missing field names."""
         super().__init__(f"Missing required confirmation fields: {', '.join(missing_fields)}")
         self.missing_fields = missing_fields
+
+
+class InvalidConversationStateError(DomainError):
+    """Raised when persisted conversation state fails domain schema validation."""
+
+    def __init__(self, invalid_fields: tuple[str, ...]) -> None:
+        """Initialize with tuple of invalid field names, omitting values for privacy."""
+        super().__init__(f"Invalid conversation state fields: {', '.join(invalid_fields)}")
+        self.invalid_fields = invalid_fields
+
+    @classmethod
+    def from_validation_error(cls, exc: Exception) -> "InvalidConversationStateError":
+        """Extract only field names from Pydantic validation error, masking all input values."""
+        errors_fn = getattr(exc, "errors", None)
+        fields: list[str] = []
+        if callable(errors_fn):
+            for err in errors_fn():
+                loc = err.get("loc")
+                if loc:
+                    field_name = str(loc[0])
+                    if field_name not in fields:
+                        fields.append(field_name)
+        return cls(tuple(fields))
