@@ -4,7 +4,6 @@ import logging
 import re
 import time as time_module
 import uuid
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, assert_never
@@ -13,6 +12,11 @@ from zoneinfo import ZoneInfo
 from booking_agent.config import Settings
 from booking_agent.database.models import Appointment
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
+from booking_agent.domain.conversation_state import (
+    ConversationSnapshot,
+    slots_from_json,
+    slots_to_json,
+)
 from booking_agent.domain.enums import (
     AppointmentStatus,
     ConfirmationCandidate,
@@ -21,6 +25,7 @@ from booking_agent.domain.enums import (
     MessageStatus,
 )
 from booking_agent.domain.errors import (
+    InvalidConversationStateError,
     LLMInvalidOutputError,
     MissingConfirmationDataError,
     SlotUnavailableError,
@@ -385,6 +390,31 @@ class ConversationService:
         self._settings = settings
         self._business_tz = ZoneInfo(settings.business_timezone)
 
+    async def _save_state(
+        self,
+        uow: UnitOfWork,
+        phone: str,
+        stage: str,
+        slots: dict[str, Any],
+    ) -> ConversationSnapshot:
+        """Save conversation state converting dict to typed domain model and verifying schema.
+
+        A validation failure on save indicates an internal programmer error and propagates
+        directly as a ValidationError.
+
+        Args:
+            uow: Active unit of work.
+            phone: Customer phone number.
+            stage: Target conversation stage string.
+            slots: Target conversation slots dictionary.
+
+        Returns:
+            Saved conversation snapshot.
+        """
+        typed_stage = ConversationStage(stage)
+        typed_slots = slots_from_json(slots)
+        return await uow.conversation_states.upsert(phone, typed_stage, typed_slots)
+
     def _enter_confirmation(
         self,
         flow: ConversationFlow,
@@ -468,6 +498,46 @@ class ConversationService:
             ConversationStage.IDLE.value,
             slots,
             render_template(TemplateKey.CONFIRMATION_DATA_UNAVAILABLE),
+        )
+
+    async def _handle_invalid_conversation_state(
+        self,
+        uow: UnitOfWork,
+        phone: str,
+        message_id: str,
+        error: InvalidConversationStateError,
+        t3_start: float,
+        t0: float,
+        phase1_ms: float,
+        phase2_llm_ms: float,
+        initial_stage: str,
+    ) -> TurnResult:
+        """Handle invalid persisted state: log structured event, reset to IDLE and fail safe."""
+        logger.error(
+            "invalid_conversation_state",
+            extra={
+                "event": "invalid_conversation_state",
+                "invalid_fields": error.invalid_fields,
+                "phone_last4": mask_phone(phone),
+            },
+        )
+        stage = ConversationStage.IDLE.value
+        slots: dict[str, Any] = {}
+        await self._save_state(uow, phone, stage, slots)
+        response = render_template(TemplateKey.CONVERSATION_RESET)
+        await uow.processed_messages.mark_done(message_id, response_text=response)
+        phase3_ms = (time_module.perf_counter() - t3_start) * 1000
+        total_ms = (time_module.perf_counter() - t0) * 1000
+        return TurnResult(
+            response_text=response,
+            status_code=200,
+            outcome="conversation_reset",
+            stage_from=initial_stage,
+            stage_to=stage,
+            phase1_lease_ms=phase1_ms,
+            phase2_llm_ms=phase2_llm_ms,
+            phase3_state_ms=phase3_ms,
+            total_duration_ms=total_ms,
         )
 
     def _extract_pending_flow(
@@ -700,16 +770,30 @@ class ConversationService:
         needs_llm_outside_lock = False
 
         async with self._uow_factory() as uow:
-            state = await uow.conversation_states.get(phone, for_update=True)
+            try:
+                state = await uow.conversation_states.get(phone, for_update=True)
+            except InvalidConversationStateError as exc:
+                return await self._handle_invalid_conversation_state(
+                    uow=uow,
+                    phone=phone,
+                    message_id=message_id,
+                    error=exc,
+                    t3_start=t3_start,
+                    t0=t0,
+                    phase1_ms=phase1_ms,
+                    phase2_llm_ms=phase2_llm_ms,
+                    initial_stage=initial_stage,
+                )
+
             if state is None:
                 stage = ConversationStage.IDLE.value
                 initial_stage = stage
                 slots = {}
                 is_expired = False
             else:
-                stage = state.stage
+                stage = state.stage.value
                 initial_stage = stage
-                slots = deepcopy(state.slots)
+                slots = slots_to_json(state.slots)
                 elapsed = self._clock.now() - state.updated_at
                 is_expired = elapsed > timedelta(minutes=self._settings.conversation_ttl_minutes)
 
@@ -718,7 +802,7 @@ class ConversationService:
                 was_in_progress = stage != ConversationStage.IDLE.value or bool(slots)
                 stage = ConversationStage.IDLE.value
                 slots = {}
-                await uow.conversation_states.upsert(phone, stage, slots)
+                await self._save_state(uow, phone, stage, slots)
                 if was_in_progress:
                     response = render_template(TemplateKey.SESSION_EXPIRED)
                     await uow.processed_messages.mark_done(message_id, response_text=response)
@@ -744,7 +828,7 @@ class ConversationService:
                     # Retry of the crashed message itself OR next message after lease timeout
                     # (stuck EXECUTING): resume execution with the same action_id
                     slots["executing_message_id"] = message_id
-                    await uow.conversation_states.upsert(phone, stage, slots)
+                    await self._save_state(uow, phone, stage, slots)
                 else:
                     response = render_template(TemplateKey.REQUEST_PROCESSING)
                     await uow.processed_messages.mark_done(message_id, response_text=response)
@@ -774,7 +858,7 @@ class ConversationService:
                     if validated_flow is None:
                         stage = ConversationStage.IDLE.value
                         slots = {}
-                        await uow.conversation_states.upsert(phone, stage, slots)
+                        await self._save_state(uow, phone, stage, slots)
                         response = render_template(TemplateKey.GREETING_HELP)
                         await uow.processed_messages.mark_done(message_id, response_text=response)
                         phase3_ms = (time_module.perf_counter() - t3_start) * 1000
@@ -806,7 +890,7 @@ class ConversationService:
                             stage, slots, response = self._handle_missing_confirmation_data(
                                 phone, slots, exc
                             )
-                            await uow.conversation_states.upsert(phone, stage, slots)
+                            await self._save_state(uow, phone, stage, slots)
                             await uow.processed_messages.mark_done(
                                 message_id, response_text=response
                             )
@@ -826,13 +910,13 @@ class ConversationService:
                             )
                         stage = ConversationStage.EXECUTING.value
                         slots["executing_message_id"] = message_id
-                        await uow.conversation_states.upsert(phone, stage, slots)
+                        await self._save_state(uow, phone, stage, slots)
                         # Lock released upon exiting block; advances to Phase 4
                     else:
                         response = render_flow_cancelled(validated_flow)
                         stage = ConversationStage.IDLE.value
                         slots = {}
-                        await uow.conversation_states.upsert(phone, stage, slots)
+                        await self._save_state(uow, phone, stage, slots)
                         await uow.processed_messages.mark_done(message_id, response_text=response)
                         phase3_ms = (time_module.perf_counter() - t3_start) * 1000
                         total_ms = (time_module.perf_counter() - t0) * 1000
@@ -882,10 +966,24 @@ class ConversationService:
         if stage != ConversationStage.EXECUTING.value:
             async with self._uow_factory() as uow:
                 # Re-lock row to apply transition
-                state = await uow.conversation_states.get(phone, for_update=True)
+                try:
+                    state = await uow.conversation_states.get(phone, for_update=True)
+                except InvalidConversationStateError as exc:
+                    return await self._handle_invalid_conversation_state(
+                        uow=uow,
+                        phone=phone,
+                        message_id=message_id,
+                        error=exc,
+                        t3_start=t3_start,
+                        t0=t0,
+                        phase1_ms=phase1_ms,
+                        phase2_llm_ms=phase2_llm_ms,
+                        initial_stage=initial_stage,
+                    )
+
                 if state is not None:
-                    stage = state.stage
-                    slots = deepcopy(state.slots)
+                    stage = state.stage.value
+                    slots = slots_to_json(state.slots)
                 customer = await uow.customers.get_by_phone(phone)
                 if customer is not None:
                     slots["customer_name"] = customer.name
@@ -893,7 +991,7 @@ class ConversationService:
                 stage, slots, response = await self._transition_state(
                     uow, phone, stage, slots, text, intent
                 )
-                await uow.conversation_states.upsert(phone, stage, slots)
+                await self._save_state(uow, phone, stage, slots)
 
             # If transition didn't move to EXECUTING, finalize message
             if stage != ConversationStage.EXECUTING.value:
@@ -924,7 +1022,8 @@ class ConversationService:
         flow = self._get_required_flow(stage, slots, phone)
         if flow is None:
             async with self._uow_factory() as uow:
-                await uow.conversation_states.upsert(
+                await self._save_state(
+                    uow,
                     phone=phone,
                     stage=ConversationStage.IDLE.value,
                     slots={},
@@ -946,7 +1045,7 @@ class ConversationService:
         except MissingConfirmationDataError as exc:
             stage, slots, response = self._handle_missing_confirmation_data(phone, slots, exc)
             async with self._uow_factory() as uow:
-                await uow.conversation_states.upsert(phone, stage, slots)
+                await self._save_state(uow, phone, stage, slots)
                 await uow.processed_messages.mark_done(message_id, response_text=response)
             total_ms = (time_module.perf_counter() - t0) * 1000
             return TurnResult(
@@ -987,7 +1086,8 @@ class ConversationService:
                             barber_display = assigned_barber.name
 
                 async with self._uow_factory() as uow:
-                    await uow.conversation_states.upsert(
+                    await self._save_state(
+                        uow,
                         phone=phone,
                         stage=ConversationStage.IDLE.value,
                         slots={},
@@ -1009,7 +1109,8 @@ class ConversationService:
                 async with self._uow_factory() as uow:
                     slots["alternative_slots"] = alternatives_iso
                     slots.pop("action_id", None)
-                    await uow.conversation_states.upsert(
+                    await self._save_state(
+                        uow,
                         phone=phone,
                         stage=ConversationStage.OFFERING_ALTERNATIVES.value,
                         slots=slots,
@@ -1051,7 +1152,8 @@ class ConversationService:
                             barber_name = assigned_barber.name
 
                 async with self._uow_factory() as uow:
-                    await uow.conversation_states.upsert(
+                    await self._save_state(
+                        uow,
                         phone=phone,
                         stage=ConversationStage.IDLE.value,
                         slots={},
@@ -1071,7 +1173,8 @@ class ConversationService:
                 async with self._uow_factory() as uow:
                     slots["alternative_slots"] = alternatives_iso
                     slots.pop("action_id", None)
-                    await uow.conversation_states.upsert(
+                    await self._save_state(
+                        uow,
                         phone=phone,
                         stage=ConversationStage.OFFERING_ALTERNATIVES.value,
                         slots=slots,
@@ -1098,7 +1201,8 @@ class ConversationService:
                 action_id=action_id,
             )
             async with self._uow_factory() as uow:
-                await uow.conversation_states.upsert(
+                await self._save_state(
+                    uow,
                     phone=phone,
                     stage=ConversationStage.IDLE.value,
                     slots={},

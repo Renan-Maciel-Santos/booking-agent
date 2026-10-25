@@ -1,12 +1,19 @@
 """Repository for ConversationState persistence and locking."""
 
-from typing import Any
-
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from booking_agent.database.models import ConversationState
+from booking_agent.domain.conversation_state import (
+    ConversationSlots,
+    ConversationSnapshot,
+    slots_from_json,
+    slots_to_json,
+)
+from booking_agent.domain.enums import ConversationStage
+from booking_agent.domain.errors import InvalidConversationStateError
 
 
 class ConversationStateRepository:
@@ -20,7 +27,7 @@ class ConversationStateRepository:
         """
         self._session = session
 
-    async def get(self, phone: str, for_update: bool = False) -> ConversationState | None:
+    async def get(self, phone: str, for_update: bool = False) -> ConversationSnapshot | None:
         """Fetch dialogue state for a phone number.
 
         Args:
@@ -28,38 +35,69 @@ class ConversationStateRepository:
             for_update: If True, locks the row with SELECT ... FOR UPDATE.
 
         Returns:
-            The conversation state or None if not found.
+            The validated conversation snapshot or None if not found.
+
+        Raises:
+            InvalidConversationStateError: If the persisted JSON fails schema validation.
         """
         stmt = select(ConversationState).where(ConversationState.phone == phone)
         if for_update:
             stmt = stmt.with_for_update()
         result = await self._session.execute(stmt)
-        return result.scalar_one_or_none()
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+
+        invalid_fields: list[str] = []
+        parsed_stage: ConversationStage | None = None
+        try:
+            parsed_stage = ConversationStage(row.stage)
+        except ValueError:
+            invalid_fields.append("stage")
+
+        try:
+            slots = slots_from_json(row.slots)
+        except ValidationError as exc:
+            raise InvalidConversationStateError.from_validation_error(
+                exc, extra_fields=tuple(invalid_fields)
+            ) from exc
+
+        if invalid_fields or parsed_stage is None:
+            raise InvalidConversationStateError(tuple(invalid_fields))
+
+        return ConversationSnapshot(
+            stage=parsed_stage,
+            slots=slots,
+            updated_at=row.updated_at,
+        )
 
     async def upsert(
         self,
         phone: str,
-        stage: str,
-        slots: dict[str, Any],
-    ) -> ConversationState:
+        stage: ConversationStage,
+        slots: ConversationSlots,
+    ) -> ConversationSnapshot:
         """Insert or update conversation state, refreshing updated_at on conflict.
 
         Args:
             phone: E.164 phone number.
-            stage: Dialogue stage (e.g. 'idle', 'collecting_info').
-            slots: Extracted entity slots dictionary.
+            stage: Typed conversation stage.
+            slots: Typed conversation slots domain model.
 
         Returns:
-            The upserted conversation state instance.
+            The upserted conversation snapshot instance.
         """
+        raw_slots = slots_to_json(slots)
+        stage_val = stage.value
+
         stmt = (
             pg_insert(ConversationState)
-            .values(phone=phone, stage=stage, slots=slots)
+            .values(phone=phone, stage=stage_val, slots=raw_slots)
             .on_conflict_do_update(
                 index_elements=[ConversationState.phone],
                 set_={
-                    "stage": stage,
-                    "slots": slots,
+                    "stage": stage_val,
+                    "slots": raw_slots,
                     "updated_at": func.now(),
                 },
             )
@@ -68,4 +106,10 @@ class ConversationStateRepository:
         )
         result = await self._session.execute(stmt)
         await self._session.flush()
-        return result.scalar_one()
+        row = result.scalar_one()
+
+        return ConversationSnapshot(
+            stage=stage,
+            slots=slots,
+            updated_at=row.updated_at,
+        )

@@ -62,6 +62,7 @@ class TemplateKey(StrEnum):
     ASK_RESCHEDULE_DATETIME = "ask_reschedule_datetime"
     RESCHEDULE_ORIGIN_NOT_FOUND = "reschedule_origin_not_found"
     CONFIRMATION_DATA_UNAVAILABLE = "confirmation_data_unavailable"
+    CONVERSATION_RESET = "conversation_reset"
 
 
 _TEMPLATES: dict[TemplateKey, str] = {
@@ -156,6 +157,9 @@ _TEMPLATES: dict[TemplateKey, str] = {
     TemplateKey.CONFIRMATION_DATA_UNAVAILABLE: (
         "Tive um problema para montar a confirmação. "
         "Pode me dizer de novo o que você gostaria de fazer?"
+    ),
+    TemplateKey.CONVERSATION_RESET: (
+        "Tive um problema com a nossa conversa e precisei recomeçar. Como posso te ajudar?"
     ),
 }
 

@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, Self
 
+from pydantic import ValidationError
+
 from booking_agent.database.models import (
     Appointment,
     Barber,
@@ -15,8 +17,18 @@ from booking_agent.database.models import (
     ProcessedMessage,
     Service,
 )
-from booking_agent.domain.enums import AppointmentStatus, MessageStatus
-from booking_agent.domain.errors import ActionAlreadyExistsError, SlotUnavailableError
+from booking_agent.domain.conversation_state import (
+    ConversationSlots,
+    ConversationSnapshot,
+    slots_from_json,
+    slots_to_json,
+)
+from booking_agent.domain.enums import AppointmentStatus, ConversationStage, MessageStatus
+from booking_agent.domain.errors import (
+    ActionAlreadyExistsError,
+    InvalidConversationStateError,
+    SlotUnavailableError,
+)
 from booking_agent.domain.models import MessageAcquisition
 from booking_agent.domain.ports import (
     AppointmentRepositoryPort,
@@ -45,6 +57,23 @@ class InMemoryDataStore:
         self.customers: dict[uuid.UUID, Customer] = {}
         self.processed_messages: dict[str, ProcessedMessage] = {}
         self.services: dict[uuid.UUID, Service] = {}
+
+    def seed_conversation_state(
+        self,
+        phone: str,
+        stage: str,
+        slots: dict[str, Any],
+        updated_at: datetime | None = None,
+    ) -> None:
+        """Seed raw unvalidated conversation state dictionary directly in store."""
+        now = updated_at or datetime.now(UTC)
+        self.conversation_states[phone] = ConversationState(
+            phone=phone,
+            stage=stage,
+            slots=deepcopy(slots),
+            created_at=now,
+            updated_at=now,
+        )
 
 
 class FakeAppointmentRepository:
@@ -306,34 +335,81 @@ class FakeConversationStateRepository:
         self._staged = staged_states
         self._clock = clock
 
-    async def get(self, phone: str, for_update: bool = False) -> ConversationState | None:
-        """Fetch dialogue state for a phone number."""
-        state = self._staged.get(phone)
-        return deepcopy(state) if state is not None else None
-
-    async def upsert(
+    def seed_raw(
         self,
         phone: str,
         stage: str,
         slots: dict[str, Any],
-    ) -> ConversationState:
+        updated_at: datetime | None = None,
+    ) -> None:
+        """Seed raw unvalidated conversation state dictionary directly in staged state."""
+        now = updated_at or (self._clock.now() if self._clock is not None else datetime.now(UTC))
+        state = ConversationState(
+            phone=phone,
+            stage=stage,
+            slots=deepcopy(slots),
+            created_at=now,
+            updated_at=now,
+        )
+        self._staged[phone] = state
+
+    async def get(self, phone: str, for_update: bool = False) -> ConversationSnapshot | None:
+        """Fetch dialogue state for a phone number."""
+        state = self._staged.get(phone)
+        if state is None:
+            return None
+
+        invalid_fields: list[str] = []
+        parsed_stage: ConversationStage | None = None
+        try:
+            parsed_stage = ConversationStage(state.stage)
+        except ValueError:
+            invalid_fields.append("stage")
+
+        try:
+            slots = slots_from_json(state.slots)
+        except ValidationError as exc:
+            raise InvalidConversationStateError.from_validation_error(
+                exc, extra_fields=tuple(invalid_fields)
+            ) from exc
+
+        if invalid_fields or parsed_stage is None:
+            raise InvalidConversationStateError(tuple(invalid_fields))
+
+        return ConversationSnapshot(
+            stage=parsed_stage,
+            slots=slots,
+            updated_at=state.updated_at,
+        )
+
+    async def upsert(
+        self,
+        phone: str,
+        stage: ConversationStage,
+        slots: ConversationSlots,
+    ) -> ConversationSnapshot:
         """Insert or update conversation state."""
+        raw_slots = slots_to_json(slots)
         state = self._staged.get(phone)
         now = self._clock.now() if self._clock is not None else datetime.now(UTC)
         if state is None:
             state = ConversationState(
                 phone=phone,
-                stage=stage,
-                slots=deepcopy(slots),
+                stage=stage.value,
+                slots=raw_slots,
                 created_at=now,
                 updated_at=now,
             )
             self._staged[phone] = state
         else:
-            state.stage = stage
-            state.slots = deepcopy(slots)
+            state.stage = stage.value
+            state.slots = raw_slots
             state.updated_at = now
-        return deepcopy(state)
+        return ConversationSnapshot(
+            stage=stage,
+            slots=slots,
+            updated_at=now,
+        )
 
 
 class FakeProcessedMessageRepository:

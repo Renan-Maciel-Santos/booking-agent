@@ -15,13 +15,13 @@ from booking_agent.database.models import (
     Barber,
     BookingAction,
     BusinessHours,
-    ConversationState,
     Customer,
     ProcessedMessage,
     Service,
 )
 from booking_agent.domain.booking_intent import BookingIntent
-from booking_agent.domain.enums import AppointmentStatus
+from booking_agent.domain.conversation_state import ConversationSlots, ConversationSnapshot
+from booking_agent.domain.enums import AppointmentStatus, ConversationStage
 from booking_agent.domain.models import MessageAcquisition
 
 
@@ -197,16 +197,20 @@ class BookingActionRepositoryPort(Protocol):
 class ConversationStateRepositoryPort(Protocol):
     """Port for ConversationState persistence and locking."""
 
-    async def get(self, phone: str, for_update: bool = False) -> ConversationState | None:
-        """Fetch dialogue state for a phone number."""
+    async def get(self, phone: str, for_update: bool = False) -> ConversationSnapshot | None:
+        """Fetch dialogue state for a phone number.
+
+        Raises:
+            InvalidConversationStateError: If the persisted JSON fails domain validation.
+        """
         ...
 
     async def upsert(
         self,
         phone: str,
-        stage: str,
-        slots: dict[str, Any],
-    ) -> ConversationState:
+        stage: ConversationStage,
+        slots: ConversationSlots,
+    ) -> ConversationSnapshot:
         """Insert or update conversation state."""
         ...
 
