@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 from scripts.demo_conversation import CLOSED_WEEKDAYS
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,10 +62,11 @@ async def test_demo_seed_business_hours_match_the_demo_script(session: AsyncSess
     """Verify demo.sql defines business hours consistent with the demo script."""
     seed_path = Path(__file__).parents[2] / "db" / "seeds" / "demo.sql"
     sql = seed_path.read_text(encoding="utf-8")
-    for statement in sql.split(";"):
-        stmt = statement.strip()
-        if stmt:
-            await session.execute(text(stmt))
+    connection = await session.connection()
+    raw_connection = await connection.get_raw_connection()
+    driver_conn = raw_connection.driver_connection
+    assert driver_conn is not None
+    await driver_conn.execute(sql)
     await session.commit()
     repo = BusinessHoursRepository(session)
 
