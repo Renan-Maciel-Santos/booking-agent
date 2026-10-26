@@ -16,7 +16,8 @@ REVISION_ID = "48450e9dcbdd"
 
 def _load_migration_sql() -> str:
     """Load REMOVE_DEAD_SLOT_KEYS_SQL directly from the migration file."""
-    migration_files = list(Path("migrations/versions").glob(f"*{REVISION_ID}*.py"))
+    versions_dir = Path(__file__).parents[2] / "migrations" / "versions"
+    migration_files = list(versions_dir.glob(f"*{REVISION_ID}*.py"))
     assert len(migration_files) == 1, (
         f"Expected exactly one migration file for revision {REVISION_ID}, found {migration_files}"
     )
