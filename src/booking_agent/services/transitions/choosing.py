@@ -23,16 +23,9 @@ from booking_agent.services.transitions.confirmation import (
     handle_missing_confirmation_data,
 )
 from booking_agent.services.transitions.context import TransitionContext
+from booking_agent.services.transitions.replies import NEGATIVE_TOKENS
 from booking_agent.services.transitions.selection import extract_selection_index
 from booking_agent.services.transitions.transition import Transition
-
-_NEGATIVE_TOKENS: set[str] = {
-    "nao",
-    "não",
-    "n",
-    "deixa",
-    "esquece",
-}
 
 
 async def handle_choosing_appointment(
@@ -62,7 +55,7 @@ async def handle_choosing_appointment(
     slots.flow = flow
 
     normalized_msg = normalize_text(text)
-    if normalized_msg in _NEGATIVE_TOKENS:
+    if normalized_msg in NEGATIVE_TOKENS:
         response = render_flow_cancelled(flow)
         return Transition(
             stage=ConversationStage.IDLE,

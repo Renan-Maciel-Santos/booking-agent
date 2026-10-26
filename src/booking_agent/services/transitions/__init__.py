@@ -23,6 +23,13 @@ from booking_agent.services.transitions.dispatch import (
 from booking_agent.services.transitions.idle import handle_idle
 from booking_agent.services.transitions.offering import handle_offering_alternatives
 from booking_agent.services.transitions.reads import ConversationReads, UnitOfWorkReads
+from booking_agent.services.transitions.replies import (
+    AFFIRMATIVE_TOKENS,
+    CANCEL_FLOW_TOKENS,
+    NEGATIVE_TOKENS,
+    classify_fast_path_candidate,
+    resolve_confirmation,
+)
 from booking_agent.services.transitions.selection import (
     extract_alternative_index,
     extract_selection_index,
@@ -30,6 +37,9 @@ from booking_agent.services.transitions.selection import (
 from booking_agent.services.transitions.transition import Transition
 
 __all__ = [
+    "AFFIRMATIVE_TOKENS",
+    "CANCEL_FLOW_TOKENS",
+    "NEGATIVE_TOKENS",
     "STAGE_HANDLERS",
     "ConfirmationDetails",
     "ConversationReads",
@@ -38,6 +48,7 @@ __all__ = [
     "TransitionContext",
     "UnhandledStageError",
     "UnitOfWorkReads",
+    "classify_fast_path_candidate",
     "enter_confirmation",
     "extract_alternative_index",
     "extract_pending_flow",
@@ -50,5 +61,6 @@ __all__ = [
     "is_valid_customer_name",
     "load_reschedule_origin",
     "mask_phone",
+    "resolve_confirmation",
     "validate_booking_slots_and_confirm",
 ]
