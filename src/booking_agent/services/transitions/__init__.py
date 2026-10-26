@@ -1,5 +1,6 @@
 """State transitions package for the conversation service state machine."""
 
+from booking_agent.services.transitions.choosing import handle_choosing_appointment
 from booking_agent.services.transitions.collecting import (
     handle_collecting_booking_details,
     is_valid_customer_name,
@@ -20,6 +21,7 @@ from booking_agent.services.transitions.dispatch import (
     UnhandledStageError,
 )
 from booking_agent.services.transitions.idle import handle_idle
+from booking_agent.services.transitions.offering import handle_offering_alternatives
 from booking_agent.services.transitions.reads import ConversationReads, UnitOfWorkReads
 from booking_agent.services.transitions.selection import (
     extract_alternative_index,
@@ -40,9 +42,11 @@ __all__ = [
     "extract_alternative_index",
     "extract_pending_flow",
     "extract_selection_index",
+    "handle_choosing_appointment",
     "handle_collecting_booking_details",
     "handle_idle",
     "handle_missing_confirmation_data",
+    "handle_offering_alternatives",
     "is_valid_customer_name",
     "load_reschedule_origin",
     "mask_phone",

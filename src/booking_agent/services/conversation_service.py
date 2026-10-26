@@ -17,7 +17,6 @@ from booking_agent.domain.conversation_state import (
     ConversationSnapshot,
 )
 from booking_agent.domain.enums import (
-    AppointmentStatus,
     ConfirmationCandidate,
     ConversationFlow,
     ConversationStage,
@@ -52,9 +51,7 @@ from booking_agent.services.transitions import (
     UnhandledStageError,
     UnitOfWorkReads,
     enter_confirmation,
-    extract_alternative_index,
     extract_pending_flow,
-    extract_selection_index,
     handle_missing_confirmation_data,
     load_reschedule_origin,
     validate_booking_slots_and_confirm,
@@ -118,10 +115,6 @@ _CANCEL_FLOW_TOKENS: set[str] = {
     "pode cancelar",
     "sim pode cancelar",
 }
-
-
-_extract_selection_index = extract_selection_index
-_extract_alternative_index = extract_alternative_index
 
 
 def classify_fast_path_candidate(text: str) -> ConfirmationCandidate | None:
@@ -915,173 +908,6 @@ class ConversationService:
 
         if typed_stage is not None and typed_stage in STAGE_HANDLERS:
             return await STAGE_HANDLERS[typed_stage](ctx, slots, text, intent)
-
-        normalized_msg = normalize_text(text)
-
-        # 1. State: CHOOSING_APPOINTMENT
-        if stage == ConversationStage.CHOOSING_APPOINTMENT.value:
-            flow = self._get_required_flow(stage, slots, phone)
-            if flow is None:
-                return Transition(
-                    stage=ConversationStage.IDLE,
-                    slots=ConversationSlots(),
-                    reply=render_template(TemplateKey.GREETING_HELP),
-                )
-            slots.flow = flow
-            if normalized_msg in _NEGATIVE_TOKENS:
-                response = render_flow_cancelled(flow)
-                return Transition(
-                    stage=ConversationStage.IDLE,
-                    slots=ConversationSlots(),
-                    reply=response,
-                )
-            candidates = slots.candidate_appointment_ids or []
-            selected_idx = _extract_selection_index(text, len(candidates))
-            if selected_idx is not None:
-                appointment_id = candidates[selected_idx]
-                slots.appointment_id = appointment_id
-                slots.candidate_appointment_ids = None
-                appt = await reads.get_appointment(appointment_id)
-                if appt is None or appt.status != AppointmentStatus.CONFIRMED.value:
-                    return Transition(
-                        stage=ConversationStage.IDLE,
-                        slots=ConversationSlots(),
-                        reply=render_template(TemplateKey.NO_APPOINTMENTS_FOUND),
-                    )
-
-                service = await reads.get_service(appt.service_id)
-                barber = await reads.get_barber(appt.barber_id)
-                cust = await reads.get_customer(appt.customer_id)
-                slots.service_id = appt.service_id
-                slots.barber_id = appt.barber_id
-                if service:
-                    slots.service_name = service.name
-                    slots.service_price_cents = service.price_cents
-                if barber:
-                    slots.barber_name = barber.name
-                if cust:
-                    slots.customer_name = cust.name
-                local_start = appt.starts_at.astimezone(self._business_tz)
-                slots.local_date = local_start.date()
-                slots.local_time = local_start.time()
-                old_dt_str = (
-                    f"{format_short_date_pt_br(local_start.date())} às "
-                    f"{format_time_pt_br(local_start.time())}"
-                )
-                slots.old_date_time = old_dt_str
-
-                if flow == ConversationFlow.CANCEL:
-                    try:
-                        details = ConfirmationDetails.from_slots(slots, self._business_tz)
-                        return self._enter_confirmation(
-                            flow=ConversationFlow.CANCEL,
-                            slots=slots,
-                            details=details,
-                        )
-                    except MissingConfirmationDataError as exc:
-                        return self._handle_missing_confirmation_data(phone, slots, exc)
-                else:  # reschedule
-                    if intent and intent.local_date and intent.local_time:
-                        slots.local_date = intent.local_date
-                        slots.local_time = intent.local_time
-                        try:
-                            details = ConfirmationDetails.from_slots(slots, self._business_tz)
-                            return self._enter_confirmation(
-                                flow=ConversationFlow.RESCHEDULE,
-                                slots=slots,
-                                details=details,
-                            )
-                        except MissingConfirmationDataError as exc:
-                            return self._handle_missing_confirmation_data(phone, slots, exc)
-                    return Transition(
-                        stage=ConversationStage.COLLECTING_BOOKING_DETAILS,
-                        slots=slots,
-                        reply=render_template(TemplateKey.ASK_RESCHEDULE_DATETIME),
-                    )
-
-            # Re-prompt appointment list
-            candidate_appts = [await reads.get_appointment(aid) for aid in candidates]
-            appt_lines: list[str] = []
-            for i, a in enumerate(candidate_appts):
-                if a:
-                    svc = await reads.get_service(a.service_id)
-                    brb = await reads.get_barber(a.barber_id)
-                    s_name = svc.name if svc else "Serviço"
-                    b_name = brb.name if brb else "Profissional"
-                    dt_local = a.starts_at.astimezone(self._business_tz)
-                    appt_lines.append(
-                        f"{i + 1}. {s_name} em {format_short_date_pt_br(dt_local.date())} "
-                        f"às {format_time_pt_br(dt_local.time())} com {b_name}"
-                    )
-            return Transition(
-                stage=ConversationStage.CHOOSING_APPOINTMENT,
-                slots=slots,
-                reply=render_template(
-                    TemplateKey.CHOOSE_APPOINTMENT,
-                    appointments_list="\n".join(appt_lines),
-                ),
-            )
-
-        # 2. State: OFFERING_ALTERNATIVES
-        if stage == ConversationStage.OFFERING_ALTERNATIVES.value:
-            flow = self._get_required_flow(stage, slots, phone)
-            if flow is None:
-                return Transition(
-                    stage=ConversationStage.IDLE,
-                    slots=ConversationSlots(),
-                    reply=render_template(TemplateKey.GREETING_HELP),
-                )
-            slots.flow = flow
-            if normalized_msg in _NEGATIVE_TOKENS:
-                response = render_flow_cancelled(flow)
-                return Transition(
-                    stage=ConversationStage.IDLE,
-                    slots=ConversationSlots(),
-                    reply=response,
-                )
-            alts = slots.alternative_slots or []
-            chosen_idx = _extract_alternative_index(text, alts)
-            if chosen_idx is not None:
-                chosen_dt = alts[chosen_idx].astimezone(self._business_tz)
-                slots.local_date = chosen_dt.date()
-                slots.local_time = chosen_dt.time()
-                slots.alternative_slots = None
-                if flow == ConversationFlow.RESCHEDULE and (
-                    slots.old_date_time is None or slots.service_price_cents is None
-                ):
-                    origin = await self._load_reschedule_origin(reads, phone, slots)
-                    if origin is None:
-                        slots = ConversationSlots()
-                        return Transition(
-                            stage=ConversationStage.IDLE,
-                            slots=slots,
-                            reply=render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND),
-                        )
-                try:
-                    details = ConfirmationDetails.from_slots(slots, self._business_tz)
-                    return self._enter_confirmation(
-                        flow=flow,
-                        slots=slots,
-                        details=details,
-                    )
-                except MissingConfirmationDataError as exc:
-                    return self._handle_missing_confirmation_data(phone, slots, exc)
-
-            if intent and (intent.local_date or intent.local_time):
-                if intent.local_date:
-                    slots.local_date = intent.local_date
-                if intent.local_time:
-                    slots.local_time = intent.local_time
-                slots.alternative_slots = None
-                return await self._validate_booking_slots_and_confirm(
-                    reads, phone, slots, flow=flow
-                )
-
-            return Transition(
-                stage=ConversationStage.OFFERING_ALTERNATIVES,
-                slots=slots,
-                reply=render_template(TemplateKey.CLARIFICATION_PROMPT),
-            )
 
         # 3. State: AWAITING_CONFIRMATION (User replied with non-exact tokens)
         if stage == ConversationStage.AWAITING_CONFIRMATION.value:
