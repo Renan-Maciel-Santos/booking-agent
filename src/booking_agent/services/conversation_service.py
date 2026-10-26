@@ -480,7 +480,7 @@ class ConversationService:
             extra={
                 "event": "missing_confirmation_data",
                 "missing_fields": error.missing_fields,
-                "phone_last4": mask_phone(phone),
+                "phone_masked": mask_phone(phone),
             },
         )
         slots = ConversationSlots()
@@ -508,7 +508,7 @@ class ConversationService:
             extra={
                 "event": "invalid_conversation_state",
                 "invalid_fields": error.invalid_fields,
-                "phone_last4": mask_phone(phone),
+                "phone_masked": mask_phone(phone),
             },
         )
         stage = ConversationStage.IDLE.value
@@ -555,7 +555,7 @@ class ConversationService:
                 "Missing pending flow in state slots for conversation",
                 extra={
                     "event": "missing_pending_flow",
-                    "phone_last4": masked_phone,
+                    "phone_masked": masked_phone,
                     "stage": stage,
                 },
             )
@@ -594,7 +594,7 @@ class ConversationService:
                 extra={
                     "event": "invalid_reschedule_origin",
                     "reason": reason,
-                    "phone_last4": masked_phone,
+                    "phone_masked": masked_phone,
                 },
             )
 

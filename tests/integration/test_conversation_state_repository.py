@@ -332,7 +332,7 @@ async def test_invalid_persisted_state_with_client_message_resets_conversation_a
         and getattr(rec, "event", None) == "invalid_conversation_state"
     ]
     assert len(invalid_logs) == 1
-    assert getattr(invalid_logs[0], "phone_last4", None) == mask_phone(phone)
+    assert getattr(invalid_logs[0], "phone_masked", None) == mask_phone(phone)
     assert "unrecognized_field" in getattr(invalid_logs[0], "invalid_fields", ())
 
     for rec in caplog.records:

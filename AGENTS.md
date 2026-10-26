@@ -64,7 +64,7 @@ is written in **English**.
 - Documentation PRs never change product behavior. If a behavior change becomes necessary during a documentation task, stop and ask for approval.
 - Never fabricate defaults for missing or malformed required data. Fail safe: log a structured event, reset to a neutral state, reply neutrally, and execute nothing.
 - Every validation rule has a single source of truth. Scripts reuse it; documentation describes it exactly as implemented.
-- No personal data in logs: mask phone numbers (`phone_last4`) and never log message text or customer names.
+- No personal data in logs: mask phone numbers with `mask_phone` under the log key `phone_masked`, and never log message text or customer names.
 - Conversation tests drive the dialogue through the final confirmation and assert the resulting database state, not only the current turn.
 - Test names describe the guaranteed behavior, never prompt steps or scenario labels.
 - Every rule is tested on both sides: what it accepts and what it rejects.
