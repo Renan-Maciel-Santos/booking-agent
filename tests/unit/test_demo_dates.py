@@ -3,10 +3,10 @@
 from datetime import UTC, date, datetime, time
 
 import pytest
-from scripts.demo_conversation import compute_demo_dates, format_demo_date_phrase
 
 from booking_agent.domain.booking_intent import IntentType
 from booking_agent.integrations.llm.fake_intent_parser import FakeIntentParser
+from scripts.demo_conversation import compute_demo_dates, format_demo_date_phrase
 from tests.fakes.fake_clock import FakeClock
 
 # 7 consecutive days starting on Monday (2026-10-19) through Sunday (2026-10-25)

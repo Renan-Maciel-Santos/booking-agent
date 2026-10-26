@@ -4,11 +4,11 @@ from datetime import time
 from pathlib import Path
 
 import pytest
-from scripts.demo_conversation import CLOSED_WEEKDAYS
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from booking_agent.repositories.business_hours_repository import BusinessHoursRepository
+from scripts.demo_conversation import CLOSED_WEEKDAYS
 
 
 async def test_business_hours_crud(session: AsyncSession) -> None:
