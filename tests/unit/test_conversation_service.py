@@ -1707,9 +1707,8 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
     }
     slots = slots_from_json(valid_slots)
     details = ConfirmationDetails.from_slots(slots, ZoneInfo("America/Sao_Paulo"))
-    stage, out_slots, prompt = conv_service._enter_confirmation(
-        flow=flow, slots=slots, details=details
-    )
+    transition = conv_service._enter_confirmation(flow=flow, slots=slots, details=details)
+    stage, out_slots, prompt = transition.stage.value, transition.slots, transition.reply
 
     assert stage == ConversationStage.AWAITING_CONFIRMATION.value
     assert out_slots.flow == flow.value
@@ -1731,11 +1730,12 @@ def test_enter_confirmation_with_explicit_typed_details() -> None:
         price="R$ 55,00",
         old_date_time="25/10 às 15:00",
     )
-    stage, out_slots, prompt = conv_service._enter_confirmation(
+    transition = conv_service._enter_confirmation(
         flow=ConversationFlow.RESCHEDULE,
         slots=slots,
         details=details,
     )
+    stage, out_slots, prompt = transition.stage.value, transition.slots, transition.reply
     assert stage == ConversationStage.AWAITING_CONFIRMATION.value
     assert out_slots.flow == ConversationFlow.RESCHEDULE.value
     assert out_slots.action_id is not None
@@ -2027,11 +2027,12 @@ def test_no_confirmation_prompt_contains_zero_price_or_empty_datetime(
         barber="Barbeiro Carlos",
         old_date_time="24/10 às 10:00",
     )
-    _stage, _out_slots, prompt = conv_service._enter_confirmation(
+    transition = conv_service._enter_confirmation(
         flow=flow,
         slots=slots_from_json({"local_date": "2026-10-25", "local_time": "14:00:00"}),
         details=details,
     )
+    prompt = transition.reply
     assert "R$ 0,00" not in prompt
     assert " às  " not in prompt
 
