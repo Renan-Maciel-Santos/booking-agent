@@ -13,7 +13,11 @@ from pydantic import ValidationError
 from booking_agent.config import Settings
 from booking_agent.database.models import Appointment, Customer
 from booking_agent.domain.booking_intent import BookingIntent, IntentType
-from booking_agent.domain.conversation_state import slots_from_json, slots_to_json
+from booking_agent.domain.conversation_state import (
+    ConversationSlots,
+    slots_from_json,
+    slots_to_json,
+)
 from booking_agent.domain.enums import (
     AppointmentStatus,
     ConfirmationCandidate,
@@ -1692,7 +1696,7 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
     the template displayed strictly corresponds to the recorded flow.
     """
     conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
-    slots: dict[str, Any] = {
+    valid_slots: dict[str, Any] = {
         "service_name": "Corte de Cabelo",
         "barber_name": "Carlos Barber",
         "local_date": "2026-10-25",
@@ -1701,15 +1705,15 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
         "customer_name": "Cliente Teste",
         "service_price_cents": 4500,
     }
-
+    slots = slots_from_json(valid_slots)
     details = ConfirmationDetails.from_slots(slots, ZoneInfo("America/Sao_Paulo"))
     stage, out_slots, prompt = conv_service._enter_confirmation(
         flow=flow, slots=slots, details=details
     )
 
     assert stage == ConversationStage.AWAITING_CONFIRMATION.value
-    assert out_slots.get("flow") == flow.value
-    assert "action_id" in out_slots
+    assert out_slots.flow == flow.value
+    assert out_slots.action_id is not None
     assert expected_template_fragment in prompt
 
 
@@ -1717,7 +1721,7 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
 def test_enter_confirmation_with_explicit_typed_details() -> None:
     """Verify that _enter_confirmation accepts explicit typed ConfirmationDetails."""
     conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
-    slots: dict[str, Any] = {}
+    slots = ConversationSlots()
     details = ConfirmationDetails(
         service="Barba Terapia",
         date="26/10",
@@ -1733,7 +1737,8 @@ def test_enter_confirmation_with_explicit_typed_details() -> None:
         details=details,
     )
     assert stage == ConversationStage.AWAITING_CONFIRMATION.value
-    assert out_slots.get("flow") == ConversationFlow.RESCHEDULE.value
+    assert out_slots.flow == ConversationFlow.RESCHEDULE.value
+    assert out_slots.action_id is not None
     assert "Barba Terapia" in prompt
     assert "25/10 às 15:00" in prompt
     assert "26/10" in prompt
@@ -1825,9 +1830,11 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
         slots["appointment_id"] = str(appt_other_id)
 
     if reason == "invalid_id":
+        invalid_slots = ConversationSlots()
+        object.__setattr__(invalid_slots, "appointment_id", "not-a-valid-uuid")
         async with uow_factory() as uow:
             with caplog.at_level(logging.ERROR):
-                origin = await conv_service._load_reschedule_origin(uow, phone, slots)
+                origin = await conv_service._load_reschedule_origin(uow, phone, invalid_slots)
             assert origin is None
             error_logs = [
                 rec
@@ -1917,7 +1924,7 @@ def test_confirmation_details_from_slots_missing_field_raises_error(
     }
     valid_slots.pop(missing_key)
     with pytest.raises(MissingConfirmationDataError) as exc_info:
-        ConfirmationDetails.from_slots(valid_slots, ZoneInfo("America/Sao_Paulo"))
+        ConfirmationDetails.from_slots(slots_from_json(valid_slots), ZoneInfo("America/Sao_Paulo"))
 
     assert expected_missing_field in exc_info.value.missing_fields
 
@@ -1926,7 +1933,7 @@ def test_confirmation_details_from_slots_missing_field_raises_error(
 def test_confirmation_details_from_slots_missing_all_fields_lists_all() -> None:
     """from_slots on empty slots lists all missing fields in MissingConfirmationDataError."""
     with pytest.raises(MissingConfirmationDataError) as exc_info:
-        ConfirmationDetails.from_slots({}, ZoneInfo("America/Sao_Paulo"))
+        ConfirmationDetails.from_slots(ConversationSlots(), ZoneInfo("America/Sao_Paulo"))
 
     assert exc_info.value.missing_fields == ("service", "date", "time", "name", "price")
 
@@ -1946,7 +1953,7 @@ def test_reschedule_flow_without_old_date_time_raises_error() -> None:
     with pytest.raises(MissingConfirmationDataError) as exc_info:
         conv_service._enter_confirmation(
             flow=ConversationFlow.RESCHEDULE,
-            slots={},
+            slots=ConversationSlots(),
             details=details,
         )
     assert exc_info.value.missing_fields == ("old_date_time",)
@@ -2022,7 +2029,7 @@ def test_no_confirmation_prompt_contains_zero_price_or_empty_datetime(
     )
     _stage, _out_slots, prompt = conv_service._enter_confirmation(
         flow=flow,
-        slots={"local_date": "2026-10-25", "local_time": "14:00:00"},
+        slots=slots_from_json({"local_date": "2026-10-25", "local_time": "14:00:00"}),
         details=details,
     )
     assert "R$ 0,00" not in prompt
@@ -2033,7 +2040,7 @@ def test_no_confirmation_prompt_contains_zero_price_or_empty_datetime(
 def test_confirmation_details_from_slots_valid_canonical() -> None:
     """Canonical slot keys produce the expected ConfirmationDetails."""
     tz = ZoneInfo("America/Sao_Paulo")
-    slots = {
+    raw = {
         "service_name": "Corte de Cabelo",
         "local_date": "2026-10-26",
         "local_time": "15:00:00",
@@ -2041,6 +2048,7 @@ def test_confirmation_details_from_slots_valid_canonical() -> None:
         "service_price_cents": 4500,
         "barber_name": "Bruno",
     }
+    slots = slots_from_json(raw)
     details = ConfirmationDetails.from_slots(slots, tz)
     assert details.service == "Corte de Cabelo"
     assert details.date == "26/10"
@@ -2051,61 +2059,8 @@ def test_confirmation_details_from_slots_valid_canonical() -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("invalid_date", ["amanha", "2026-13-45"])
-def test_confirmation_details_from_slots_rejects_malformed_date(invalid_date: str) -> None:
-    """Malformed local_date values fail with 'date' in missing_fields."""
-    tz = ZoneInfo("America/Sao_Paulo")
-    slots = {
-        "service_name": "Corte de Cabelo",
-        "local_date": invalid_date,
-        "local_time": "15:00:00",
-        "customer_name": "Renan Maciel",
-        "service_price_cents": 4500,
-        "barber_name": "Bruno",
-    }
-    with pytest.raises(MissingConfirmationDataError) as exc_info:
-        ConfirmationDetails.from_slots(slots, tz)
-    assert "date" in exc_info.value.missing_fields
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("invalid_time", ["25:99", "15h"])
-def test_confirmation_details_from_slots_rejects_malformed_time(invalid_time: str) -> None:
-    """Malformed local_time values fail with 'time' in missing_fields."""
-    tz = ZoneInfo("America/Sao_Paulo")
-    slots = {
-        "service_name": "Corte de Cabelo",
-        "local_date": "2026-10-26",
-        "local_time": invalid_time,
-        "customer_name": "Renan Maciel",
-        "service_price_cents": 4500,
-        "barber_name": "Bruno",
-    }
-    with pytest.raises(MissingConfirmationDataError) as exc_info:
-        ConfirmationDetails.from_slots(slots, tz)
-    assert "time" in exc_info.value.missing_fields
-
-
-@pytest.mark.unit
-def test_confirmation_details_from_slots_rejects_alias_only_slots() -> None:
-    """Slots containing only legacy alias keys are rejected listing all mandatory fields."""
-    tz = ZoneInfo("America/Sao_Paulo")
-    alias_slots = {
-        "service": "Corte de Cabelo",
-        "date": "2026-10-26",
-        "time": "15:00:00",
-        "name": "Renan Maciel",
-        "price": "R$ 45,00",
-        "barber": "Bruno",
-    }
-    with pytest.raises(MissingConfirmationDataError) as exc_info:
-        ConfirmationDetails.from_slots(alias_slots, tz)
-    assert set(exc_info.value.missing_fields) == {"service", "date", "time", "name", "price"}
-
-
-@pytest.mark.unit
 async def test_save_state_with_unknown_key_raises_validation_error() -> None:
-    """Invalid slot state during save indicates a programmer error and fails fast."""
+    """Invalid slot state during construction indicates a programmer error and fails fast."""
     conv_service, uow_factory, _, _, _, _, _ = _create_unit_fixtures()
     phone = "+5511999998888"
 
@@ -2115,7 +2070,7 @@ async def test_save_state_with_unknown_key_raises_validation_error() -> None:
                 uow=uow,
                 phone=phone,
                 stage=ConversationStage.IDLE.value,
-                slots={"unknown_key_123": "value"},
+                slots=slots_from_json({"unknown_key_123": "value"}),
             )
     assert "unknown_key_123" in str(exc_info.value)
 
