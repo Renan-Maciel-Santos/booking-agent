@@ -10,6 +10,7 @@ from booking_agent.domain.enums import ConversationStage
 from booking_agent.services.entity_resolver import EntityResolver
 from booking_agent.services.transitions.context import TransitionContext
 from booking_agent.services.transitions.dispatch import (
+    ORCHESTRATOR_OWNED_STAGES,
     STAGE_HANDLERS,
     UnhandledStageError,
     dispatch_transition,
@@ -54,6 +55,16 @@ def test_dispatch_table_contains_expected_stages() -> None:
 
     # COMPLETED receives identical handler function as IDLE
     assert STAGE_HANDLERS[ConversationStage.COMPLETED] is STAGE_HANDLERS[ConversationStage.IDLE]
+
+
+@pytest.mark.unit
+def test_dispatch_table_covers_all_conversation_stages_exhaustively() -> None:
+    """Every ConversationStage is registered in STAGE_HANDLERS or ORCHESTRATOR_OWNED_STAGES."""
+    all_stages = set(ConversationStage)
+    handler_stages = set(STAGE_HANDLERS.keys())
+
+    assert all_stages == handler_stages | ORCHESTRATOR_OWNED_STAGES
+    assert handler_stages & ORCHESTRATOR_OWNED_STAGES == set()
 
 
 @pytest.mark.unit
