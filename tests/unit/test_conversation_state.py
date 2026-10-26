@@ -1,12 +1,14 @@
 """Unit tests for ConversationSlots domain model, round-trip serialization and privacy."""
 
 from typing import Any
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
 from booking_agent.domain.conversation_state import (
     ANY_BARBER,
+    ConversationSlots,
     slots_from_json,
     slots_to_json,
 )
@@ -171,3 +173,13 @@ def test_conversation_slots_privacy_proof_masks_input_values() -> None:
     assert sensitive_marker not in str(domain_error)
     assert domain_error.invalid_fields == ("service_id",)
     assert str(domain_error) == "Invalid conversation state fields: service_id"
+
+
+@pytest.mark.unit
+def test_conversation_slots_barber_filter() -> None:
+    """barber_filter returns None for unset or 'any', and UUID for specific barber."""
+    assert ConversationSlots(barber_id=None).barber_filter() is None
+    assert ConversationSlots(barber_id=ANY_BARBER).barber_filter() is None
+
+    barber_uuid = UUID("22222222-2222-2222-2222-222222222222")
+    assert ConversationSlots(barber_id=barber_uuid).barber_filter() == barber_uuid

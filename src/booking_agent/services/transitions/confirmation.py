@@ -42,14 +42,6 @@ def mask_phone(phone: str) -> str:
     return f"{prefix}*****{suffix}"
 
 
-def _barber_filter(slots: ConversationSlots) -> uuid.UUID | None:
-    """Extract barber filter from slots, returning None if ANY_BARBER sentinel or empty."""
-    bid = slots.barber_id
-    if bid is None or bid == ANY_BARBER:
-        return None
-    return bid
-
-
 @dataclass(frozen=True, slots=True)
 class ConfirmationDetails:
     """Typed details for rendering deterministic confirmation messages."""
@@ -340,7 +332,7 @@ async def validate_booking_slots_and_confirm(
     service_id = slots.service_id
     target_date = slots.local_date
     target_time = slots.local_time
-    barber_id = _barber_filter(slots)
+    barber_id = slots.barber_filter()
 
     avail = await ctx.reads.list_availability(
         service_id=service_id,

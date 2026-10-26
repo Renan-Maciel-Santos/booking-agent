@@ -2,7 +2,6 @@
 
 import logging
 import time as time_module
-import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import assert_never
@@ -148,16 +147,6 @@ def resolve_confirmation(candidate: ConfirmationCandidate, flow: ConversationFlo
             return flow == ConversationFlow.CANCEL
         case _ as unreachable:
             assert_never(unreachable)
-
-
-def _barber_filter(slots: ConversationSlots) -> uuid.UUID | None:
-    """Extract optional barber UUID filter from slots, returning None for 'any' or unset."""
-    raw_id = slots.barber_id
-    if not raw_id or raw_id == ANY_BARBER:
-        return None
-    if isinstance(raw_id, uuid.UUID):
-        return raw_id
-    return uuid.UUID(str(raw_id))
 
 
 class ConversationService:
@@ -686,7 +675,7 @@ class ConversationService:
             if slots.service_id is None or slots.local_date is None or slots.local_time is None:
                 raise MissingConfirmationDataError(("service_id", "local_date", "local_time"))
             service_id = slots.service_id
-            barber_id = _barber_filter(slots)
+            barber_id = slots.barber_filter()
             target_date = slots.local_date
             target_time = slots.local_time
             starts_at = localize_datetime(target_date, target_time, self._business_tz)

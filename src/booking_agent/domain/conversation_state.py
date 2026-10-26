@@ -38,6 +38,17 @@ class ConversationSlots(BaseModel):
     candidate_appointment_ids: list[UUID] | None = None
     alternative_slots: list[AwareDatetime] | None = None
 
+    def barber_filter(self) -> UUID | None:
+        """Extract optional barber UUID filter from slots, returning None for 'any' or unset.
+
+        Returns:
+            Specific barber UUID, or None if barber_id is None or ANY_BARBER.
+        """
+        bid = self.barber_id
+        if bid is None or bid == ANY_BARBER:
+            return None
+        return bid
+
 
 def slots_from_json(data: dict[str, Any]) -> ConversationSlots:
     """Validate and deserialize raw JSON dictionary into typed ConversationSlots.
