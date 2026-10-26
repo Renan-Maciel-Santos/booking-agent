@@ -19,9 +19,11 @@ from booking_agent.services.transitions.confirmation import (
 )
 from booking_agent.services.transitions.context import TransitionContext
 from booking_agent.services.transitions.dispatch import (
+    ORCHESTRATOR_OWNED_STAGES,
     STAGE_HANDLERS,
     StageHandler,
     UnhandledStageError,
+    dispatch_transition,
 )
 from booking_agent.services.transitions.idle import handle_idle
 from booking_agent.services.transitions.offering import handle_offering_alternatives
@@ -43,6 +45,7 @@ __all__ = [
     "AFFIRMATIVE_TOKENS",
     "CANCEL_FLOW_TOKENS",
     "NEGATIVE_TOKENS",
+    "ORCHESTRATOR_OWNED_STAGES",
     "STAGE_HANDLERS",
     "ConfirmationDetails",
     "ConversationReads",
@@ -52,6 +55,7 @@ __all__ = [
     "UnhandledStageError",
     "UnitOfWorkReads",
     "classify_fast_path_candidate",
+    "dispatch_transition",
     "enter_confirmation",
     "extract_alternative_index",
     "extract_pending_flow",

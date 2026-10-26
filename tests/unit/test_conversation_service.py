@@ -36,8 +36,11 @@ from booking_agent.services.conversation_service import (
 from booking_agent.services.entity_resolver import EntityResolver
 from booking_agent.services.templates import TemplateKey, render_template
 from booking_agent.services.transitions import (
+    TransitionContext,
     UnitOfWorkReads,
     classify_fast_path_candidate,
+    enter_confirmation,
+    load_reschedule_origin,
     resolve_confirmation,
 )
 from tests.conftest import build_test_settings
@@ -1698,7 +1701,6 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
     """Parameterized invariant for the 3 flows: when entering AWAITING_CONFIRMATION,
     the template displayed strictly corresponds to the recorded flow.
     """
-    conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
     valid_slots: dict[str, Any] = {
         "service_name": "Corte de Cabelo",
         "barber_name": "Carlos Barber",
@@ -1710,7 +1712,7 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
     }
     slots = slots_from_json(valid_slots)
     details = ConfirmationDetails.from_slots(slots, ZoneInfo("America/Sao_Paulo"))
-    transition = conv_service._enter_confirmation(flow=flow, slots=slots, details=details)
+    transition = enter_confirmation(flow=flow, slots=slots, details=details)
     stage, out_slots, prompt = transition.stage.value, transition.slots, transition.reply
 
     assert stage == ConversationStage.AWAITING_CONFIRMATION.value
@@ -1721,8 +1723,7 @@ async def test_awaiting_confirmation_invariant_matches_flow_template(
 
 @pytest.mark.unit
 def test_enter_confirmation_with_explicit_typed_details() -> None:
-    """Verify that _enter_confirmation accepts explicit typed ConfirmationDetails."""
-    conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
+    """Verify that enter_confirmation accepts explicit typed ConfirmationDetails."""
     slots = ConversationSlots()
     details = ConfirmationDetails(
         service="Barba Terapia",
@@ -1733,7 +1734,7 @@ def test_enter_confirmation_with_explicit_typed_details() -> None:
         price="R$ 55,00",
         old_date_time="25/10 às 15:00",
     )
-    transition = conv_service._enter_confirmation(
+    transition = enter_confirmation(
         flow=ConversationFlow.RESCHEDULE,
         slots=slots,
         details=details,
@@ -1837,8 +1838,15 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
         object.__setattr__(invalid_slots, "appointment_id", "not-a-valid-uuid")
         async with uow_factory() as uow:
             reads = UnitOfWorkReads(uow, conv_service._booking_service)
+            ctx = TransitionContext(
+                reads=reads,
+                clock=conv_service._clock,
+                entity_resolver=conv_service._entity_resolver,
+                business_tz=conv_service._business_tz,
+                phone=phone,
+            )
             with caplog.at_level(logging.ERROR):
-                origin = await conv_service._load_reschedule_origin(reads, phone, invalid_slots)
+                origin = await load_reschedule_origin(ctx, invalid_slots)
             assert origin is None
             error_logs = [
                 rec
@@ -1944,8 +1952,7 @@ def test_confirmation_details_from_slots_missing_all_fields_lists_all() -> None:
 
 @pytest.mark.unit
 def test_reschedule_flow_without_old_date_time_raises_error() -> None:
-    """_enter_confirmation requires old_date_time for RESCHEDULE and raises if missing."""
-    conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
+    """enter_confirmation requires old_date_time for RESCHEDULE and raises if missing."""
     details = ConfirmationDetails(
         service="Corte",
         date="25/10",
@@ -1955,7 +1962,7 @@ def test_reschedule_flow_without_old_date_time_raises_error() -> None:
         old_date_time=None,
     )
     with pytest.raises(MissingConfirmationDataError) as exc_info:
-        conv_service._enter_confirmation(
+        enter_confirmation(
             flow=ConversationFlow.RESCHEDULE,
             slots=ConversationSlots(),
             details=details,
@@ -2020,8 +2027,7 @@ async def test_incomplete_slots_in_awaiting_confirmation_fails_safe(
 def test_no_confirmation_prompt_contains_zero_price_or_empty_datetime(
     flow: ConversationFlow,
 ) -> None:
-    """Confirmation prompts rendered via _enter_confirmation never contain 'R$ 0,00' or ' às  '."""
-    conv_service, _, _, _, _, _, _ = _create_unit_fixtures()
+    """Confirmation prompts rendered via enter_confirmation never contain 'R$ 0,00' or ' às  '."""
     details = ConfirmationDetails(
         service="Corte Teste",
         date="25/10",
@@ -2031,7 +2037,7 @@ def test_no_confirmation_prompt_contains_zero_price_or_empty_datetime(
         barber="Barbeiro Carlos",
         old_date_time="24/10 às 10:00",
     )
-    transition = conv_service._enter_confirmation(
+    transition = enter_confirmation(
         flow=flow,
         slots=slots_from_json({"local_date": "2026-10-25", "local_time": "14:00:00"}),
         details=details,

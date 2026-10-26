@@ -1,19 +1,18 @@
 """Unit tests for stage dispatching and unhandled stage handling."""
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from booking_agent.config import Settings
 from booking_agent.domain.conversation_state import ConversationSlots
 from booking_agent.domain.enums import ConversationStage
-from booking_agent.services.conversation_service import ConversationService
 from booking_agent.services.entity_resolver import EntityResolver
+from booking_agent.services.transitions.context import TransitionContext
 from booking_agent.services.transitions.dispatch import (
     STAGE_HANDLERS,
     UnhandledStageError,
+    dispatch_transition,
 )
 from tests.fakes.fake_clock import FakeClock
 from tests.fakes.in_memory_reads import InMemoryReads
@@ -32,15 +31,14 @@ def base_clock() -> FakeClock:
 
 
 @pytest.fixture
-def conv_service(test_settings: Settings, base_clock: FakeClock) -> ConversationService:
-    """Create a minimal ConversationService for transition tests."""
-    return ConversationService(
-        uow_factory=MagicMock(),
-        booking_service=MagicMock(),
-        intent_parser=MagicMock(),
-        entity_resolver=EntityResolver(),
-        settings=test_settings,
+def transition_context(base_clock: FakeClock, business_tz: ZoneInfo) -> TransitionContext:
+    """Create a minimal TransitionContext for dispatch tests."""
+    return TransitionContext(
+        reads=InMemoryReads(),
         clock=base_clock,
+        entity_resolver=EntityResolver(),
+        business_tz=business_tz,
+        phone="+5511999998888",
     )
 
 
@@ -52,6 +50,7 @@ def test_dispatch_table_contains_expected_stages() -> None:
     assert ConversationStage.COLLECTING_BOOKING_DETAILS in STAGE_HANDLERS
     assert ConversationStage.CHOOSING_APPOINTMENT in STAGE_HANDLERS
     assert ConversationStage.OFFERING_ALTERNATIVES in STAGE_HANDLERS
+    assert ConversationStage.AWAITING_CONFIRMATION in STAGE_HANDLERS
 
     # COMPLETED receives identical handler function as IDLE
     assert STAGE_HANDLERS[ConversationStage.COMPLETED] is STAGE_HANDLERS[ConversationStage.IDLE]
@@ -59,18 +58,14 @@ def test_dispatch_table_contains_expected_stages() -> None:
 
 @pytest.mark.unit
 async def test_awaiting_confirmation_stage_registered_and_handled(
-    conv_service: ConversationService,
+    transition_context: TransitionContext,
 ) -> None:
     """AWAITING_CONFIRMATION stage is registered in STAGE_HANDLERS and handled."""
-    assert ConversationStage.AWAITING_CONFIRMATION in STAGE_HANDLERS
-
-    reads = InMemoryReads()
     slots = ConversationSlots(flow=None)
 
-    transition = await conv_service._transition_state(
-        reads=reads,
-        phone="+5511999998888",
+    transition = await dispatch_transition(
         stage=ConversationStage.AWAITING_CONFIRMATION.value,
+        ctx=transition_context,
         slots=slots,
         text="sim",
         intent=None,
@@ -81,16 +76,14 @@ async def test_awaiting_confirmation_stage_registered_and_handled(
 
 @pytest.mark.unit
 async def test_completed_stage_dispatches_to_idle_handler(
-    conv_service: ConversationService,
+    transition_context: TransitionContext,
 ) -> None:
     """COMPLETED stage is handled identically to IDLE via STAGE_HANDLERS dispatch."""
-    reads = InMemoryReads()
     slots = ConversationSlots()
 
-    transition = await conv_service._transition_state(
-        reads=reads,
-        phone="+5511999998888",
+    transition = await dispatch_transition(
         stage=ConversationStage.COMPLETED.value,
+        ctx=transition_context,
         slots=slots,
         text="olá",
         intent=None,
@@ -100,18 +93,16 @@ async def test_completed_stage_dispatches_to_idle_handler(
 
 
 @pytest.mark.unit
-async def test_transition_state_with_executing_raises_unhandled_stage_error(
-    conv_service: ConversationService,
+async def test_dispatch_transition_with_executing_raises_unhandled_stage_error(
+    transition_context: TransitionContext,
 ) -> None:
-    """EXECUTING stage reaching _transition_state raises UnhandledStageError."""
-    reads = InMemoryReads()
+    """EXECUTING stage reaching dispatch_transition raises UnhandledStageError."""
     slots = ConversationSlots()
 
     with pytest.raises(UnhandledStageError) as exc_info:
-        await conv_service._transition_state(
-            reads=reads,
-            phone="+5511999998888",
+        await dispatch_transition(
             stage=ConversationStage.EXECUTING.value,
+            ctx=transition_context,
             slots=slots,
             text="confirmar",
             intent=None,

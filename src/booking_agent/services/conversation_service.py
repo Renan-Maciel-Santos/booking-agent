@@ -7,7 +7,6 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from booking_agent.config import Settings
-from booking_agent.database.models import Appointment
 from booking_agent.domain.booking_intent import BookingIntent
 from booking_agent.domain.conversation_state import (
     ConversationSlots,
@@ -40,22 +39,16 @@ from booking_agent.services.templates import (
     render_template,
 )
 from booking_agent.services.transitions import (
-    STAGE_HANDLERS,
-    ConversationReads,
-    Transition,
-    TransitionContext,
-    UnhandledStageError,
-    UnitOfWorkReads,
-    classify_fast_path_candidate,
-    enter_confirmation,
-    extract_pending_flow,
-    handle_missing_confirmation_data,
-    load_reschedule_origin,
-    resolve_confirmation,
-    validate_booking_slots_and_confirm,
+    ConfirmationDetails as ConfirmationDetails,
 )
 from booking_agent.services.transitions import (
-    ConfirmationDetails as ConfirmationDetails,
+    TransitionContext,
+    UnitOfWorkReads,
+    classify_fast_path_candidate,
+    dispatch_transition,
+    extract_pending_flow,
+    handle_missing_confirmation_data,
+    resolve_confirmation,
 )
 from booking_agent.services.transitions import (
     is_valid_customer_name as is_valid_customer_name,
@@ -126,24 +119,6 @@ class ConversationService:
         typed_stage = ConversationStage(stage)
         return await uow.conversation_states.upsert(phone, typed_stage, slots)
 
-    def _enter_confirmation(
-        self,
-        flow: ConversationFlow,
-        slots: ConversationSlots,
-        details: ConfirmationDetails,
-    ) -> Transition:
-        """Single entry point for transitioning the conversation into AWAITING_CONFIRMATION."""
-        return enter_confirmation(flow, slots, details)
-
-    def _handle_missing_confirmation_data(
-        self,
-        phone: str,
-        slots: ConversationSlots,
-        error: MissingConfirmationDataError,
-    ) -> Transition:
-        """Handle missing confirmation details: log event without PII and fail safe to IDLE."""
-        return handle_missing_confirmation_data(phone, slots, error)
-
     async def _handle_invalid_conversation_state(
         self,
         uow: UnitOfWork,
@@ -183,28 +158,6 @@ class ConversationService:
             phase3_state_ms=phase3_ms,
             total_duration_ms=total_ms,
         )
-
-    def _extract_pending_flow(
-        self,
-        stage: str,
-        slots: ConversationSlots,
-        phone: str,
-    ) -> ConversationFlow | None:
-        """Extract and validate the pending flow from state slots."""
-        return extract_pending_flow(stage, slots, phone)
-
-    # Backward compatibility alias
-    _get_required_flow = _extract_pending_flow
-
-    async def _load_reschedule_origin(
-        self,
-        reads: ConversationReads,
-        phone: str,
-        slots: ConversationSlots,
-    ) -> Appointment | None:
-        """Validate and load the confirmed origin appointment for rescheduling."""
-        ctx = TransitionContext(reads, self._clock, self._entity_resolver, self._business_tz, phone)
-        return await load_reschedule_origin(ctx, slots)
 
     async def handle_message(self, message_id: str, phone: str, text: str) -> str:
         """Process an incoming chat message and return response text for user."""
@@ -395,7 +348,7 @@ class ConversationService:
                     stage == ConversationStage.AWAITING_CONFIRMATION.value
                     and slots.action_id is not None
                 ):
-                    validated_flow = self._get_required_flow(stage, slots, phone)
+                    validated_flow = extract_pending_flow(stage, slots, phone)
                     if validated_flow is None:
                         stage = ConversationStage.IDLE.value
                         slots = ConversationSlots()
@@ -428,7 +381,7 @@ class ConversationService:
                             ):
                                 raise MissingConfirmationDataError(("old_date_time",))
                         except MissingConfirmationDataError as exc:
-                            transition = self._handle_missing_confirmation_data(phone, slots, exc)
+                            transition = handle_missing_confirmation_data(phone, slots, exc)
                             stage = transition.stage.value
                             slots = transition.slots
                             response = transition.reply
@@ -531,7 +484,20 @@ class ConversationService:
                     slots.customer_name = customer.name
 
                 reads = UnitOfWorkReads(uow, self._booking_service)
-                transition = await self._transition_state(reads, phone, stage, slots, text, intent)
+                ctx = TransitionContext(
+                    reads=reads,
+                    clock=self._clock,
+                    entity_resolver=self._entity_resolver,
+                    business_tz=self._business_tz,
+                    phone=phone,
+                )
+                transition = await dispatch_transition(
+                    stage=stage,
+                    ctx=ctx,
+                    slots=slots,
+                    text=text,
+                    intent=intent,
+                )
                 stage = transition.stage.value
                 slots = transition.slots
                 response = transition.reply
@@ -563,7 +529,7 @@ class ConversationService:
         # Phase 4 & 5: Action Execution & Post-Action State Update
         # -------------------------------------------------------------
         t4_start = time_module.perf_counter()
-        flow = self._get_required_flow(stage, slots, phone)
+        flow = extract_pending_flow(stage, slots, phone)
         if flow is None:
             slots = ConversationSlots()
             async with self._uow_factory() as uow:
@@ -588,7 +554,7 @@ class ConversationService:
             if flow == ConversationFlow.RESCHEDULE and not details.old_date_time:
                 raise MissingConfirmationDataError(("old_date_time",))
         except MissingConfirmationDataError as exc:
-            transition = self._handle_missing_confirmation_data(phone, slots, exc)
+            transition = handle_missing_confirmation_data(phone, slots, exc)
             stage = transition.stage.value
             slots = transition.slots
             response = transition.reply
@@ -806,42 +772,3 @@ class ConversationService:
             phase4_action_ms=phase4_ms,
             total_duration_ms=total_ms,
         )
-
-    async def _transition_state(
-        self,
-        reads: ConversationReads,
-        phone: str,
-        stage: str,
-        slots: ConversationSlots,
-        text: str,
-        intent: BookingIntent | None,
-    ) -> Transition:
-        """Compute state machine transition and render template."""
-        try:
-            typed_stage = ConversationStage(stage)
-        except ValueError:
-            typed_stage = None
-
-        ctx = TransitionContext(
-            reads=reads,
-            clock=self._clock,
-            entity_resolver=self._entity_resolver,
-            business_tz=self._business_tz,
-            phone=phone,
-        )
-
-        if typed_stage is not None and typed_stage in STAGE_HANDLERS:
-            return await STAGE_HANDLERS[typed_stage](ctx, slots, text, intent)
-
-        raise UnhandledStageError(stage)
-
-    async def _validate_booking_slots_and_confirm(
-        self,
-        reads: ConversationReads,
-        phone: str,
-        slots: ConversationSlots,
-        flow: ConversationFlow = ConversationFlow.BOOK,
-    ) -> Transition:
-        """Validate availability for collected slots and produce confirmation prompt."""
-        ctx = TransitionContext(reads, self._clock, self._entity_resolver, self._business_tz, phone)
-        return await validate_booking_slots_and_confirm(ctx, slots, flow=flow)
