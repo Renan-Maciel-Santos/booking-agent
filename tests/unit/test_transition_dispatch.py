@@ -46,13 +46,37 @@ def conv_service(test_settings: Settings, base_clock: FakeClock) -> Conversation
 
 @pytest.mark.unit
 def test_dispatch_table_contains_expected_stages() -> None:
-    """IDLE, COMPLETED and COLLECTING_BOOKING_DETAILS are in STAGE_HANDLERS."""
+    """Extracted decision stages are in STAGE_HANDLERS, with COMPLETED aliased to IDLE."""
     assert ConversationStage.IDLE in STAGE_HANDLERS
     assert ConversationStage.COMPLETED in STAGE_HANDLERS
     assert ConversationStage.COLLECTING_BOOKING_DETAILS in STAGE_HANDLERS
+    assert ConversationStage.CHOOSING_APPOINTMENT in STAGE_HANDLERS
+    assert ConversationStage.OFFERING_ALTERNATIVES in STAGE_HANDLERS
 
     # COMPLETED receives identical handler function as IDLE
     assert STAGE_HANDLERS[ConversationStage.COMPLETED] is STAGE_HANDLERS[ConversationStage.IDLE]
+
+
+@pytest.mark.unit
+async def test_awaiting_confirmation_still_handled_in_class(
+    conv_service: ConversationService,
+) -> None:
+    """AWAITING_CONFIRMATION stage remains handled in the class."""
+    assert ConversationStage.AWAITING_CONFIRMATION not in STAGE_HANDLERS
+
+    reads = InMemoryReads()
+    slots = ConversationSlots(flow=None)
+
+    transition = await conv_service._transition_state(
+        reads=reads,
+        phone="+5511999998888",
+        stage=ConversationStage.AWAITING_CONFIRMATION.value,
+        slots=slots,
+        text="sim",
+        intent=None,
+    )
+
+    assert transition.stage == ConversationStage.IDLE
 
 
 @pytest.mark.unit
