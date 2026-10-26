@@ -1,12 +1,10 @@
 """ConversationService orchestrating multi-turn chat interactions across 6 phases."""
 
 import logging
-import re
 import time as time_module
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import assert_never
 from zoneinfo import ZoneInfo
 
@@ -54,7 +52,9 @@ from booking_agent.services.transitions import (
     UnhandledStageError,
     UnitOfWorkReads,
     enter_confirmation,
+    extract_alternative_index,
     extract_pending_flow,
+    extract_selection_index,
     handle_missing_confirmation_data,
     load_reschedule_origin,
     validate_booking_slots_and_confirm,
@@ -120,51 +120,8 @@ _CANCEL_FLOW_TOKENS: set[str] = {
 }
 
 
-def _extract_selection_index(text: str, max_count: int) -> int | None:
-    """Extract an ordinal or numeric index (0-based) from customer reply."""
-    cleaned = normalize_text(text)
-    match = re.search(r"\b(\d+)\b", cleaned)
-    if match:
-        idx = int(match.group(1)) - 1
-        if 0 <= idx < max_count:
-            return idx
-    word_map = {
-        "primeiro": 0,
-        "primeira": 0,
-        "1o": 0,
-        "1a": 0,
-        "um": 0,
-        "segundo": 1,
-        "segunda": 1,
-        "2o": 1,
-        "2a": 1,
-        "dois": 1,
-        "terceiro": 2,
-        "terceira": 2,
-        "3o": 2,
-        "3a": 2,
-        "tres": 2,
-    }
-    for word, idx in word_map.items():
-        if word in cleaned and idx < max_count:
-            return idx
-    return None
-
-
-def _extract_alternative_index(text: str, alternatives: Sequence[datetime | str]) -> int | None:
-    """Extract which alternative slot the user selected by ordinal or time match."""
-    cleaned = normalize_text(text)
-    idx = _extract_selection_index(text, len(alternatives))
-    if idx is not None:
-        return idx
-    for i, alt in enumerate(alternatives):
-        dt = datetime.fromisoformat(alt) if isinstance(alt, str) else alt
-        time_str_1 = dt.strftime("%H:%M")
-        time_str_2 = f"{dt.hour}h"
-        time_str_3 = f"{dt.hour}:{dt.minute:02d}"
-        if time_str_1 in cleaned or time_str_2 in cleaned or time_str_3 in cleaned:
-            return i
-    return None
+_extract_selection_index = extract_selection_index
+_extract_alternative_index = extract_alternative_index
 
 
 def classify_fast_path_candidate(text: str) -> ConfirmationCandidate | None:

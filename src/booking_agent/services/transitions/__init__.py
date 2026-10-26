@@ -21,6 +21,10 @@ from booking_agent.services.transitions.dispatch import (
 )
 from booking_agent.services.transitions.idle import handle_idle
 from booking_agent.services.transitions.reads import ConversationReads, UnitOfWorkReads
+from booking_agent.services.transitions.selection import (
+    extract_alternative_index,
+    extract_selection_index,
+)
 from booking_agent.services.transitions.transition import Transition
 
 __all__ = [
@@ -33,7 +37,9 @@ __all__ = [
     "UnhandledStageError",
     "UnitOfWorkReads",
     "enter_confirmation",
+    "extract_alternative_index",
     "extract_pending_flow",
+    "extract_selection_index",
     "handle_collecting_booking_details",
     "handle_idle",
     "handle_missing_confirmation_data",
