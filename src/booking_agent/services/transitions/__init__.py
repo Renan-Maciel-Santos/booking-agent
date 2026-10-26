@@ -1,5 +1,8 @@
 """State transitions package for the conversation service state machine."""
 
+from booking_agent.services.transitions.awaiting_confirmation import (
+    handle_awaiting_confirmation,
+)
 from booking_agent.services.transitions.choosing import handle_choosing_appointment
 from booking_agent.services.transitions.collecting import (
     handle_collecting_booking_details,
@@ -53,6 +56,7 @@ __all__ = [
     "extract_alternative_index",
     "extract_pending_flow",
     "extract_selection_index",
+    "handle_awaiting_confirmation",
     "handle_choosing_appointment",
     "handle_collecting_booking_details",
     "handle_idle",

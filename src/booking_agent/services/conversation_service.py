@@ -4,14 +4,12 @@ import logging
 import time as time_module
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import assert_never
 from zoneinfo import ZoneInfo
 
 from booking_agent.config import Settings
 from booking_agent.database.models import Appointment
 from booking_agent.domain.booking_intent import BookingIntent
 from booking_agent.domain.conversation_state import (
-    ANY_BARBER,
     ConversationSlots,
     ConversationSnapshot,
 )
@@ -834,141 +832,6 @@ class ConversationService:
 
         if typed_stage is not None and typed_stage in STAGE_HANDLERS:
             return await STAGE_HANDLERS[typed_stage](ctx, slots, text, intent)
-
-        # 3. State: AWAITING_CONFIRMATION (User replied with non-exact tokens)
-        if stage == ConversationStage.AWAITING_CONFIRMATION.value:
-            pending_flow = self._get_required_flow(stage, slots, phone)
-            if pending_flow is None:
-                return Transition(
-                    stage=ConversationStage.IDLE,
-                    slots=ConversationSlots(),
-                    reply=render_template(TemplateKey.GREETING_HELP),
-                )
-            slots.flow = pending_flow
-            candidate = classify_fast_path_candidate(text)
-            if candidate is not None:
-                is_affirmative = resolve_confirmation(candidate, pending_flow)
-                if is_affirmative:
-                    try:
-                        details = ConfirmationDetails.from_slots(slots, self._business_tz)
-                        if (
-                            pending_flow == ConversationFlow.RESCHEDULE
-                            and not details.old_date_time
-                        ):
-                            raise MissingConfirmationDataError(("old_date_time",))
-                    except MissingConfirmationDataError as exc:
-                        return self._handle_missing_confirmation_data(phone, slots, exc)
-                    slots.executing_message_id = None
-                    return Transition(
-                        stage=ConversationStage.EXECUTING,
-                        slots=slots,
-                        reply="",
-                    )
-                response = render_flow_cancelled(pending_flow)
-                return Transition(
-                    stage=ConversationStage.IDLE,
-                    slots=ConversationSlots(),
-                    reply=response,
-                )
-            if intent:
-                has_updates = False
-                active_services = await reads.list_active_services()
-                active_barbers = await reads.list_active_barbers()
-
-                if intent.service_name:
-                    res_s = self._entity_resolver.resolve_service(
-                        intent.service_name, active_services
-                    )
-                    if res_s.matched and res_s.entity:
-                        slots.service_id = res_s.entity.id
-                        slots.service_name = res_s.entity.name
-                        slots.service_price_cents = res_s.entity.price_cents
-                        has_updates = True
-
-                if intent.barber_name:
-                    res_b = self._entity_resolver.resolve_barber(intent.barber_name, active_barbers)
-                    if res_b.matched:
-                        if res_b.entity is None:
-                            slots.barber_id = ANY_BARBER
-                            slots.barber_name = None
-                        else:
-                            slots.barber_id = res_b.entity.id
-                            slots.barber_name = res_b.entity.name
-                        has_updates = True
-
-                if intent.local_date:
-                    slots.local_date = intent.local_date
-                    has_updates = True
-                if intent.local_time:
-                    slots.local_time = intent.local_time
-                    has_updates = True
-
-                if has_updates:
-                    # Invalidate previous action_id with fresh uuid
-                    slots.action_id = None
-                    match pending_flow:
-                        case ConversationFlow.BOOK:
-                            return await self._validate_booking_slots_and_confirm(
-                                reads, phone, slots, flow=ConversationFlow.BOOK
-                            )
-                        case ConversationFlow.RESCHEDULE:
-                            origin = await self._load_reschedule_origin(reads, phone, slots)
-                            if origin is None:
-                                slots = ConversationSlots()
-                                return Transition(
-                                    stage=ConversationStage.IDLE,
-                                    slots=slots,
-                                    reply=render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND),
-                                )
-                            return await self._validate_booking_slots_and_confirm(
-                                reads, phone, slots, flow=ConversationFlow.RESCHEDULE
-                            )
-                        case ConversationFlow.CANCEL:
-                            origin = await self._load_reschedule_origin(reads, phone, slots)
-                            if origin is None:
-                                slots = ConversationSlots()
-                                return Transition(
-                                    stage=ConversationStage.IDLE,
-                                    slots=slots,
-                                    reply=render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND),
-                                )
-                            return await self._validate_booking_slots_and_confirm(
-                                reads, phone, slots, flow=ConversationFlow.RESCHEDULE
-                            )
-                        case _ as unreachable:
-                            assert_never(unreachable)
-
-            # Re-present confirmation prompt if user input was unclear
-            if pending_flow == ConversationFlow.BOOK:
-                try:
-                    details = ConfirmationDetails.from_slots(slots, self._business_tz)
-                    return self._enter_confirmation(
-                        flow=pending_flow,
-                        slots=slots,
-                        details=details,
-                    )
-                except MissingConfirmationDataError as exc:
-                    return self._handle_missing_confirmation_data(phone, slots, exc)
-
-            if pending_flow in (ConversationFlow.RESCHEDULE, ConversationFlow.CANCEL):
-                if slots.appointment_id is not None and (
-                    slots.old_date_time is None
-                    or slots.service_price_cents is None
-                    or slots.customer_name is None
-                ):
-                    await self._load_reschedule_origin(reads, phone, slots)
-                try:
-                    ConfirmationDetails.from_slots(slots, self._business_tz)
-                    if pending_flow == ConversationFlow.RESCHEDULE and not slots.old_date_time:
-                        raise MissingConfirmationDataError(("old_date_time",))
-                except MissingConfirmationDataError as exc:
-                    return self._handle_missing_confirmation_data(phone, slots, exc)
-
-            return Transition(
-                stage=ConversationStage(stage),
-                slots=slots,
-                reply=render_template(TemplateKey.CLARIFICATION_PROMPT),
-            )
 
         raise UnhandledStageError(stage)
 
