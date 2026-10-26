@@ -1025,7 +1025,7 @@ async def test_awaiting_confirmation_missing_flow_fails_safe_and_logs_error(
         for rec in caplog.records
         if rec.levelno == logging.ERROR and getattr(rec, "event", None) == "missing_pending_flow"
     ]
-    assert getattr(error_logs[0], "phone_last4", None) == mask_phone(phone)
+    assert getattr(error_logs[0], "phone_masked", None) == mask_phone(phone)
     assert not hasattr(error_logs[0], "phone")
     assert getattr(error_logs[0], "stage", None) == ConversationStage.AWAITING_CONFIRMATION.value
 
@@ -1844,7 +1844,7 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
             ]
             assert len(error_logs) == 1
             assert getattr(error_logs[0], "reason", None) == "invalid_id"
-            assert getattr(error_logs[0], "phone_last4", None) == mask_phone(phone)
+            assert getattr(error_logs[0], "phone_masked", None) == mask_phone(phone)
         return
 
     async with uow_factory() as uow:
@@ -1895,7 +1895,7 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
     ]
     assert len(error_logs) == 1
     assert getattr(error_logs[0], "reason", None) == reason
-    assert getattr(error_logs[0], "phone_last4", None) == mask_phone(phone)
+    assert getattr(error_logs[0], "phone_masked", None) == mask_phone(phone)
 
 
 @pytest.mark.unit
