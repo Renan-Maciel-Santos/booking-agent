@@ -54,8 +54,8 @@ def slots_from_json(data: dict[str, Any]) -> ConversationSlots:
 def slots_to_json(slots: ConversationSlots) -> dict[str, Any]:
     """Serialize typed ConversationSlots to a dictionary suitable for JSONB storage.
 
-    Uses exclude_unset so only explicitly set keys (including explicit None values)
-    are serialized, preserving sentinel values like barber_id=None.
+    Uses exclude_none so unpopulated slots (represented as None) are omitted
+    from the serialized dictionary, as None strictly means 'not set'.
 
     Args:
         slots: Typed ConversationSlots instance.
@@ -63,7 +63,7 @@ def slots_to_json(slots: ConversationSlots) -> dict[str, Any]:
     Returns:
         Dictionary representation conforming to database JSONB format.
     """
-    return slots.model_dump(mode="json", exclude_unset=True)
+    return slots.model_dump(mode="json", exclude_none=True)
 
 
 @dataclass(frozen=True, slots=True)

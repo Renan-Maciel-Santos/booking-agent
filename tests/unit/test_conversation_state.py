@@ -30,7 +30,6 @@ from booking_agent.domain.errors import InvalidConversationStateError
                 "service_name": "Corte de Cabelo",
                 "service_price_cents": 4500,
                 "barber_id": ANY_BARBER,
-                "barber_name": None,
                 "local_date": "2026-11-20",
                 "local_time": "14:00:00",
                 "awaiting": "customer_name",
@@ -61,7 +60,6 @@ from booking_agent.domain.errors import InvalidConversationStateError
                 "service_name": "Corte de Cabelo",
                 "service_price_cents": 4500,
                 "barber_id": ANY_BARBER,
-                "barber_name": None,
                 "local_date": "2026-11-21",
                 "local_time": "15:30:00",
                 "customer_name": "Renan Maciel",
@@ -120,18 +118,36 @@ def test_conversation_slots_round_trip_with_any_barber() -> None:
 
 
 @pytest.mark.unit
+def test_conversation_slots_round_trip_omits_null_keys() -> None:
+    """Keys with null values are omitted from slots_to_json serialization."""
+    data = {"flow": "book", "barber_name": None}
+    slots = slots_from_json(data)
+    assert slots_to_json(slots) == {"flow": "book"}
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "invalid_data",
     [
         {"unknown_key": "val"},
         {"service_id": "x"},
         {"local_date": "amanha"},
+        {"local_date": "2026-13-45"},
         {"local_time": "25:99"},
+        {"local_time": "15h"},
         {"flow": "x"},
         {"awaiting": "foo"},
         {"service_price_cents": -1},
         {"executing_message_id": ""},
         {"barber_id": "qualquer"},
+        {
+            "service": "Corte de Cabelo",
+            "date": "2026-10-26",
+            "time": "15:00:00",
+            "name": "Renan Maciel",
+            "price": "R$ 45,00",
+            "barber": "Bruno",
+        },
     ],
 )
 def test_conversation_slots_rejection(invalid_data: dict[str, Any]) -> None:
