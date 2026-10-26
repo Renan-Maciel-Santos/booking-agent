@@ -58,11 +58,11 @@ def test_dispatch_table_contains_expected_stages() -> None:
 
 
 @pytest.mark.unit
-async def test_awaiting_confirmation_still_handled_in_class(
+async def test_awaiting_confirmation_stage_registered_and_handled(
     conv_service: ConversationService,
 ) -> None:
-    """AWAITING_CONFIRMATION stage remains handled in the class."""
-    assert ConversationStage.AWAITING_CONFIRMATION not in STAGE_HANDLERS
+    """AWAITING_CONFIRMATION stage is registered in STAGE_HANDLERS and handled."""
+    assert ConversationStage.AWAITING_CONFIRMATION in STAGE_HANDLERS
 
     reads = InMemoryReads()
     slots = ConversationSlots(flow=None)

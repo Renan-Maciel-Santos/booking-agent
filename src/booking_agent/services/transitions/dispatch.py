@@ -8,6 +8,9 @@ from typing import Protocol
 from booking_agent.domain.booking_intent import BookingIntent
 from booking_agent.domain.conversation_state import ConversationSlots
 from booking_agent.domain.enums import ConversationStage
+from booking_agent.services.transitions.awaiting_confirmation import (
+    handle_awaiting_confirmation,
+)
 from booking_agent.services.transitions.choosing import handle_choosing_appointment
 from booking_agent.services.transitions.collecting import handle_collecting_booking_details
 from booking_agent.services.transitions.context import TransitionContext
@@ -50,4 +53,5 @@ STAGE_HANDLERS: Mapping[ConversationStage, StageHandler] = {
     ConversationStage.COLLECTING_BOOKING_DETAILS: handle_collecting_booking_details,
     ConversationStage.CHOOSING_APPOINTMENT: handle_choosing_appointment,
     ConversationStage.OFFERING_ALTERNATIVES: handle_offering_alternatives,
+    ConversationStage.AWAITING_CONFIRMATION: handle_awaiting_confirmation,
 }
