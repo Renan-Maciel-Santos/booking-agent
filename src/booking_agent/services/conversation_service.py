@@ -47,7 +47,11 @@ from booking_agent.services.templates import (
     render_flow_cancelled,
     render_template,
 )
-from booking_agent.services.transitions import Transition
+from booking_agent.services.transitions import (
+    ConversationReads,
+    Transition,
+    UnitOfWorkReads,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -573,7 +577,7 @@ class ConversationService:
 
     async def _load_reschedule_origin(
         self,
-        uow: UnitOfWork,
+        reads: ConversationReads,
         phone: str,
         slots: ConversationSlots,
     ) -> Appointment | None:
@@ -584,7 +588,7 @@ class ConversationService:
         Populates service_id, barber_id, and old_date_time in slots.
 
         Args:
-            uow: Active unit of work.
+            reads: Read-only conversation port.
             phone: Customer phone number.
             slots: State slots instance.
 
@@ -614,7 +618,7 @@ class ConversationService:
             _reject("invalid_id")
             return None
 
-        appt = await uow.appointments.get_by_id(aid)
+        appt = await reads.get_appointment(aid)
         if appt is None:
             _reject("not_found")
             return None
@@ -623,7 +627,7 @@ class ConversationService:
             _reject("not_confirmed")
             return None
 
-        customer = await uow.customers.get_by_phone(phone)
+        customer = await reads.get_customer_by_phone(phone)
         if customer is None or appt.customer_id != customer.id:
             _reject("not_owned")
             return None
@@ -633,14 +637,14 @@ class ConversationService:
         if slots.barber_id is None:
             slots.barber_id = appt.barber_id
         if slots.service_name is None or slots.service_price_cents is None:
-            svc = await uow.services.get_by_id(appt.service_id)
+            svc = await reads.get_service(appt.service_id)
             if svc:
                 if slots.service_name is None:
                     slots.service_name = svc.name
                 if slots.service_price_cents is None:
                     slots.service_price_cents = svc.price_cents
         if slots.barber_name is None and slots.barber_id != ANY_BARBER:
-            brb = await uow.barbers.get_by_id(appt.barber_id)
+            brb = await reads.get_barber(appt.barber_id)
             if brb:
                 slots.barber_name = brb.name
         if slots.customer_name is None and customer:
@@ -978,7 +982,8 @@ class ConversationService:
                 if customer is not None:
                     slots.customer_name = customer.name
 
-                transition = await self._transition_state(uow, phone, stage, slots, text, intent)
+                reads = UnitOfWorkReads(uow, self._booking_service)
+                transition = await self._transition_state(reads, phone, stage, slots, text, intent)
                 stage = transition.stage.value
                 slots = transition.slots
                 response = transition.reply
@@ -1256,7 +1261,7 @@ class ConversationService:
 
     async def _transition_state(
         self,
-        uow: UnitOfWork,
+        reads: ConversationReads,
         phone: str,
         stage: str,
         slots: ConversationSlots,
@@ -1289,7 +1294,7 @@ class ConversationService:
                 appointment_id = candidates[selected_idx]
                 slots.appointment_id = appointment_id
                 slots.candidate_appointment_ids = None
-                appt = await uow.appointments.get_by_id(appointment_id)
+                appt = await reads.get_appointment(appointment_id)
                 if appt is None or appt.status != AppointmentStatus.CONFIRMED.value:
                     return Transition(
                         stage=ConversationStage.IDLE,
@@ -1297,9 +1302,9 @@ class ConversationService:
                         reply=render_template(TemplateKey.NO_APPOINTMENTS_FOUND),
                     )
 
-                service = await uow.services.get_by_id(appt.service_id)
-                barber = await uow.barbers.get_by_id(appt.barber_id)
-                cust = await uow.customers.get_by_id(appt.customer_id)
+                service = await reads.get_service(appt.service_id)
+                barber = await reads.get_barber(appt.barber_id)
+                cust = await reads.get_customer(appt.customer_id)
                 slots.service_id = appt.service_id
                 slots.barber_id = appt.barber_id
                 if service:
@@ -1348,12 +1353,12 @@ class ConversationService:
                     )
 
             # Re-prompt appointment list
-            candidate_appts = [await uow.appointments.get_by_id(aid) for aid in candidates]
+            candidate_appts = [await reads.get_appointment(aid) for aid in candidates]
             appt_lines: list[str] = []
             for i, a in enumerate(candidate_appts):
                 if a:
-                    svc = await uow.services.get_by_id(a.service_id)
-                    brb = await uow.barbers.get_by_id(a.barber_id)
+                    svc = await reads.get_service(a.service_id)
+                    brb = await reads.get_barber(a.barber_id)
                     s_name = svc.name if svc else "Serviço"
                     b_name = brb.name if brb else "Profissional"
                     dt_local = a.starts_at.astimezone(self._business_tz)
@@ -1397,7 +1402,7 @@ class ConversationService:
                 if flow == ConversationFlow.RESCHEDULE and (
                     slots.old_date_time is None or slots.service_price_cents is None
                 ):
-                    origin = await self._load_reschedule_origin(uow, phone, slots)
+                    origin = await self._load_reschedule_origin(reads, phone, slots)
                     if origin is None:
                         slots = ConversationSlots()
                         return Transition(
@@ -1421,7 +1426,9 @@ class ConversationService:
                 if intent.local_time:
                     slots.local_time = intent.local_time
                 slots.alternative_slots = None
-                return await self._validate_booking_slots_and_confirm(uow, phone, slots, flow=flow)
+                return await self._validate_booking_slots_and_confirm(
+                    reads, phone, slots, flow=flow
+                )
 
             return Transition(
                 stage=ConversationStage.OFFERING_ALTERNATIVES,
@@ -1466,8 +1473,8 @@ class ConversationService:
                 )
             if intent:
                 has_updates = False
-                active_services = await uow.services.list_active()
-                active_barbers = await uow.barbers.list_active()
+                active_services = await reads.list_active_services()
+                active_barbers = await reads.list_active_barbers()
 
                 if intent.service_name:
                     res_s = self._entity_resolver.resolve_service(
@@ -1503,10 +1510,10 @@ class ConversationService:
                     match pending_flow:
                         case ConversationFlow.BOOK:
                             return await self._validate_booking_slots_and_confirm(
-                                uow, phone, slots, flow=ConversationFlow.BOOK
+                                reads, phone, slots, flow=ConversationFlow.BOOK
                             )
                         case ConversationFlow.RESCHEDULE:
-                            origin = await self._load_reschedule_origin(uow, phone, slots)
+                            origin = await self._load_reschedule_origin(reads, phone, slots)
                             if origin is None:
                                 slots = ConversationSlots()
                                 return Transition(
@@ -1515,10 +1522,10 @@ class ConversationService:
                                     reply=render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND),
                                 )
                             return await self._validate_booking_slots_and_confirm(
-                                uow, phone, slots, flow=ConversationFlow.RESCHEDULE
+                                reads, phone, slots, flow=ConversationFlow.RESCHEDULE
                             )
                         case ConversationFlow.CANCEL:
-                            origin = await self._load_reschedule_origin(uow, phone, slots)
+                            origin = await self._load_reschedule_origin(reads, phone, slots)
                             if origin is None:
                                 slots = ConversationSlots()
                                 return Transition(
@@ -1527,7 +1534,7 @@ class ConversationService:
                                     reply=render_template(TemplateKey.RESCHEDULE_ORIGIN_NOT_FOUND),
                                 )
                             return await self._validate_booking_slots_and_confirm(
-                                uow, phone, slots, flow=ConversationFlow.RESCHEDULE
+                                reads, phone, slots, flow=ConversationFlow.RESCHEDULE
                             )
                         case _ as unreachable:
                             assert_never(unreachable)
@@ -1550,7 +1557,7 @@ class ConversationService:
                     or slots.service_price_cents is None
                     or slots.customer_name is None
                 ):
-                    await self._load_reschedule_origin(uow, phone, slots)
+                    await self._load_reschedule_origin(reads, phone, slots)
                 try:
                     ConfirmationDetails.from_slots(slots, self._business_tz)
                     if pending_flow == ConversationFlow.RESCHEDULE and not slots.old_date_time:
@@ -1580,14 +1587,14 @@ class ConversationService:
                     else ConversationFlow.RESCHEDULE
                 )
                 slots.flow = flow
-                customer = await uow.customers.get_by_phone(phone)
+                customer = await reads.get_customer_by_phone(phone)
                 if customer is None:
                     return Transition(
                         stage=ConversationStage.IDLE,
                         slots=ConversationSlots(),
                         reply=render_template(TemplateKey.NO_APPOINTMENTS_FOUND),
                     )
-                appts = await uow.appointments.list_by_customer(customer.id)
+                appts = await reads.list_customer_appointments(customer.id)
                 now_utc = self._clock.now()
                 future_appts = [
                     a
@@ -1604,8 +1611,8 @@ class ConversationService:
                 if len(future_appts) == 1:
                     target_appt = future_appts[0]
                     slots.appointment_id = target_appt.id
-                    service = await uow.services.get_by_id(target_appt.service_id)
-                    barber = await uow.barbers.get_by_id(target_appt.barber_id)
+                    service = await reads.get_service(target_appt.service_id)
+                    barber = await reads.get_barber(target_appt.barber_id)
                     slots.service_id = target_appt.service_id
                     slots.barber_id = target_appt.barber_id
                     if service:
@@ -1656,8 +1663,8 @@ class ConversationService:
                 slots.candidate_appointment_ids = [a.id for a in future_appts]
                 appt_lines = []
                 for i, a in enumerate(future_appts):
-                    svc = await uow.services.get_by_id(a.service_id)
-                    brb = await uow.barbers.get_by_id(a.barber_id)
+                    svc = await reads.get_service(a.service_id)
+                    brb = await reads.get_barber(a.barber_id)
                     s_name = svc.name if svc else "Serviço"
                     b_name = brb.name if brb else "Profissional"
                     dt_local = a.starts_at.astimezone(self._business_tz)
@@ -1701,7 +1708,7 @@ class ConversationService:
 
             if slots.local_date is not None and slots.local_time is not None:
                 if slots.old_date_time is None or slots.service_price_cents is None:
-                    origin = await self._load_reschedule_origin(uow, phone, slots)
+                    origin = await self._load_reschedule_origin(reads, phone, slots)
                     if origin is None:
                         slots = ConversationSlots()
                         return Transition(
@@ -1725,8 +1732,8 @@ class ConversationService:
             )
 
         # Flow == ConversationFlow.BOOK: merge slots
-        active_services = await uow.services.list_active()
-        active_barbers = await uow.barbers.list_active()
+        active_services = await reads.list_active_services()
+        active_barbers = await reads.list_active_barbers()
 
         # Service resolution
         svc_query = intent.service_name if (intent and intent.service_name) else None
@@ -1821,11 +1828,11 @@ class ConversationService:
             )
 
         # All slots collected! Check availability and advance to AWAITING_CONFIRMATION
-        return await self._validate_booking_slots_and_confirm(uow, phone, slots)
+        return await self._validate_booking_slots_and_confirm(reads, phone, slots)
 
     async def _validate_booking_slots_and_confirm(
         self,
-        uow: UnitOfWork,
+        reads: ConversationReads,
         phone: str,
         slots: ConversationSlots,
         flow: ConversationFlow = ConversationFlow.BOOK,
@@ -1843,7 +1850,7 @@ class ConversationService:
         target_time = slots.local_time
         barber_id = _barber_filter(slots)
 
-        avail = await self._booking_service.list_availability(
+        avail = await reads.list_availability(
             service_id=service_id,
             target_date=target_date,
             barber_id=barber_id,

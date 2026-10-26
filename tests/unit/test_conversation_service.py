@@ -37,6 +37,7 @@ from booking_agent.services.conversation_service import (
 )
 from booking_agent.services.entity_resolver import EntityResolver
 from booking_agent.services.templates import TemplateKey, render_template
+from booking_agent.services.transitions import UnitOfWorkReads
 from tests.conftest import build_test_settings
 from tests.fakes.fake_clock import FakeClock
 from tests.fakes.fake_uow import (
@@ -1833,8 +1834,9 @@ async def test_invalid_reschedule_origin_fails_safe_to_idle(
         invalid_slots = ConversationSlots()
         object.__setattr__(invalid_slots, "appointment_id", "not-a-valid-uuid")
         async with uow_factory() as uow:
+            reads = UnitOfWorkReads(uow, conv_service._booking_service)
             with caplog.at_level(logging.ERROR):
-                origin = await conv_service._load_reschedule_origin(uow, phone, invalid_slots)
+                origin = await conv_service._load_reschedule_origin(reads, phone, invalid_slots)
             assert origin is None
             error_logs = [
                 rec
