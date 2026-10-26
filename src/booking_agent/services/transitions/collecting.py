@@ -26,37 +26,12 @@ from booking_agent.services.transitions.confirmation import (
     validate_booking_slots_and_confirm,
 )
 from booking_agent.services.transitions.context import TransitionContext
+from booking_agent.services.transitions.replies import (
+    AFFIRMATIVE_TOKENS,
+    CANCEL_FLOW_TOKENS,
+    NEGATIVE_TOKENS,
+)
 from booking_agent.services.transitions.transition import Transition
-
-_AFFIRMATIVE_TOKENS: set[str] = {
-    "sim",
-    "s",
-    "ok",
-    "confirmo",
-    "confirmar",
-    "confirmado",
-    "confirmada",
-    "pode confirmar",
-    "fechado",
-    "beleza",
-    "isso",
-    "com certeza",
-}
-
-_NEGATIVE_TOKENS: set[str] = {
-    "nao",
-    "não",
-    "n",
-    "deixa",
-    "esquece",
-}
-
-_CANCEL_FLOW_TOKENS: set[str] = {
-    "cancela",
-    "cancelar",
-    "pode cancelar",
-    "sim pode cancelar",
-}
 
 _CUSTOMER_NAME_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ '-]{2,60}$")
 
@@ -140,9 +115,9 @@ def is_valid_customer_name(name: str) -> bool:
         return False
     normalized = normalize_text(stripped)
     if (
-        normalized in _AFFIRMATIVE_TOKENS
-        or normalized in _NEGATIVE_TOKENS
-        or normalized in _CANCEL_FLOW_TOKENS
+        normalized in AFFIRMATIVE_TOKENS
+        or normalized in NEGATIVE_TOKENS
+        or normalized in CANCEL_FLOW_TOKENS
         or normalized in _KNOWN_COMMANDS
     ):
         return False

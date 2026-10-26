@@ -30,14 +30,16 @@ from booking_agent.services.booking_service import BookingService, localize_date
 from booking_agent.services.conversation_service import (
     ConfirmationDetails,
     ConversationService,
-    classify_fast_path_candidate,
     is_valid_customer_name,
     mask_phone,
-    resolve_confirmation,
 )
 from booking_agent.services.entity_resolver import EntityResolver
 from booking_agent.services.templates import TemplateKey, render_template
-from booking_agent.services.transitions import UnitOfWorkReads
+from booking_agent.services.transitions import (
+    UnitOfWorkReads,
+    classify_fast_path_candidate,
+    resolve_confirmation,
+)
 from tests.conftest import build_test_settings
 from tests.fakes.fake_clock import FakeClock
 from tests.fakes.fake_uow import (

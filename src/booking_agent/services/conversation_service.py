@@ -16,7 +16,6 @@ from booking_agent.domain.conversation_state import (
     ConversationSnapshot,
 )
 from booking_agent.domain.enums import (
-    ConfirmationCandidate,
     ConversationFlow,
     ConversationStage,
     MessageStatus,
@@ -34,7 +33,7 @@ from booking_agent.domain.ports import (
     UnitOfWorkFactory,
 )
 from booking_agent.services.booking_service import BookingService, localize_datetime
-from booking_agent.services.entity_resolver import EntityResolver, normalize_text
+from booking_agent.services.entity_resolver import EntityResolver
 from booking_agent.services.templates import (
     TemplateKey,
     format_short_date_pt_br,
@@ -49,10 +48,12 @@ from booking_agent.services.transitions import (
     TransitionContext,
     UnhandledStageError,
     UnitOfWorkReads,
+    classify_fast_path_candidate,
     enter_confirmation,
     extract_pending_flow,
     handle_missing_confirmation_data,
     load_reschedule_origin,
+    resolve_confirmation,
     validate_booking_slots_and_confirm,
 )
 from booking_agent.services.transitions import (
@@ -83,70 +84,6 @@ class TurnResult:
     phase3_state_ms: float = 0.0
     phase4_action_ms: float = 0.0
     total_duration_ms: float = 0.0
-
-
-_AFFIRMATIVE_TOKENS: set[str] = {
-    "sim",
-    "s",
-    "ok",
-    "confirmo",
-    "confirmar",
-    "confirmado",
-    "confirmada",
-    "pode confirmar",
-    "fechado",
-    "beleza",
-    "isso",
-    "com certeza",
-}
-
-_NEGATIVE_TOKENS: set[str] = {
-    "nao",
-    "não",
-    "n",
-    "deixa",
-    "esquece",
-}
-
-_CANCEL_FLOW_TOKENS: set[str] = {
-    "cancela",
-    "cancelar",
-    "pode cancelar",
-    "sim pode cancelar",
-}
-
-
-def classify_fast_path_candidate(text: str) -> ConfirmationCandidate | None:
-    """Classify user text into a confirmation candidate category, or None if non-exact."""
-    normalized_msg = normalize_text(text)
-    if normalized_msg in _AFFIRMATIVE_TOKENS:
-        return ConfirmationCandidate.AFFIRMATIVE
-    if normalized_msg in _NEGATIVE_TOKENS:
-        return ConfirmationCandidate.NEGATIVE
-    if normalized_msg in _CANCEL_FLOW_TOKENS:
-        return ConfirmationCandidate.CANCEL_ACTION
-    return None
-
-
-def resolve_confirmation(candidate: ConfirmationCandidate, flow: ConversationFlow) -> bool:
-    """Disambiguate confirmation candidate tokens based on the pending flow.
-
-    Args:
-        candidate: Fast-path confirmation candidate category.
-        flow: Currently active conversation flow.
-
-    Returns:
-        True if the action should proceed to execution, False if the action is cancelled.
-    """
-    match candidate:
-        case ConfirmationCandidate.AFFIRMATIVE:
-            return True
-        case ConfirmationCandidate.NEGATIVE:
-            return False
-        case ConfirmationCandidate.CANCEL_ACTION:
-            return flow == ConversationFlow.CANCEL
-        case _ as unreachable:
-            assert_never(unreachable)
 
 
 class ConversationService:
