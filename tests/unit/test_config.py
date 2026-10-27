@@ -228,3 +228,103 @@ def test_webhook_secret_length_validation() -> None:
     secret_32 = "x" * 32
     settings = build_test_settings(webhook_secret=SecretStr(secret_32))
     assert settings.webhook_secret.get_secret_value() == secret_32
+
+
+def test_retention_settings_defaults() -> None:
+    settings = build_test_settings()
+    assert settings.processed_message_redact_after_days == 7
+    assert settings.processed_message_delete_after_days == 90
+    assert settings.conversation_state_delete_after_days == 30
+    assert settings.retention_batch_size == 1000
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("processed_message_redact_after_days", 0),
+        ("processed_message_delete_after_days", 0),
+        ("conversation_state_delete_after_days", 0),
+        ("retention_batch_size", 0),
+    ],
+)
+def test_retention_fields_must_be_greater_or_equal_to_one(field: str, value: int) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        build_test_settings(**{field: value})
+
+
+def test_processed_message_delete_after_days_must_be_greater_than_redact() -> None:
+    from pydantic import ValidationError
+
+    # Accepted: delete strictly greater than redact
+    settings = build_test_settings(
+        processed_message_redact_after_days=7,
+        processed_message_delete_after_days=8,
+    )
+    assert settings.processed_message_redact_after_days == 7
+    assert settings.processed_message_delete_after_days == 8
+
+    # Rejected: delete equal to redact
+    with pytest.raises(
+        ValidationError,
+        match=(
+            "processed_message_delete_after_days must be greater than "
+            "processed_message_redact_after_days"
+        ),
+    ):
+        build_test_settings(
+            processed_message_redact_after_days=7,
+            processed_message_delete_after_days=7,
+        )
+
+    # Rejected: delete less than redact
+    with pytest.raises(
+        ValidationError,
+        match=(
+            "processed_message_delete_after_days must be greater than "
+            "processed_message_redact_after_days"
+        ),
+    ):
+        build_test_settings(
+            processed_message_redact_after_days=10,
+            processed_message_delete_after_days=7,
+        )
+
+
+def test_conversation_state_delete_after_days_must_be_greater_than_ttl() -> None:
+    from pydantic import ValidationError
+
+    # Accepted: 1 day (1440 minutes) > 1439 minutes TTL
+    settings = build_test_settings(
+        conversation_state_delete_after_days=1,
+        conversation_ttl_minutes=1439,
+    )
+    assert settings.conversation_state_delete_after_days == 1
+    assert settings.conversation_ttl_minutes == 1439
+
+    # Rejected: 1 day (1440 minutes) == 1440 minutes TTL
+    with pytest.raises(
+        ValidationError,
+        match=(
+            r"conversation_state_delete_after_days \(converted to minutes\) "
+            r"must be greater than conversation_ttl_minutes"
+        ),
+    ):
+        build_test_settings(
+            conversation_state_delete_after_days=1,
+            conversation_ttl_minutes=1440,
+        )
+
+    # Rejected: 1 day (1440 minutes) < 1441 minutes TTL
+    with pytest.raises(
+        ValidationError,
+        match=(
+            r"conversation_state_delete_after_days \(converted to minutes\) "
+            r"must be greater than conversation_ttl_minutes"
+        ),
+    ):
+        build_test_settings(
+            conversation_state_delete_after_days=1,
+            conversation_ttl_minutes=1441,
+        )

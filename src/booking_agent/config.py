@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     conversation_ttl_minutes: int = Field(default=30, ge=1)
     message_lease_timeout_seconds: int = Field(default=300, ge=1)
 
+    # Personal data retention policy settings
+    processed_message_redact_after_days: int = Field(default=7, ge=1)
+    processed_message_delete_after_days: int = Field(default=90, ge=1)
+    conversation_state_delete_after_days: int = Field(default=30, ge=1)
+    retention_batch_size: int = Field(default=1000, ge=1)
+
     # LLM adapter configuration
     llm_provider: Literal["openai", "fake"] = "openai"
     llm_model: str = "gpt-4o-mini"
@@ -116,6 +122,26 @@ class Settings(BaseSettings):
             self.openai_api_key is None or not self.openai_api_key.get_secret_value().strip()
         ):
             raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER is 'openai'")
+        return self
+
+    @model_validator(mode="after")
+    def validate_retention_settings(self) -> Self:
+        """Validate personal data retention policy settings.
+
+        Ensures that processed message deletion window is strictly greater than
+        its redaction window, and that conversation state deletion window
+        (converted to minutes) is strictly greater than conversation TTL.
+        """
+        if self.processed_message_delete_after_days <= self.processed_message_redact_after_days:
+            raise ValueError(
+                "processed_message_delete_after_days must be greater than "
+                "processed_message_redact_after_days"
+            )
+        if (self.conversation_state_delete_after_days * 24 * 60) <= self.conversation_ttl_minutes:
+            raise ValueError(
+                "conversation_state_delete_after_days (converted to minutes) "
+                "must be greater than conversation_ttl_minutes"
+            )
         return self
 
     # A plain property (not a computed_field) keeps the URL, which embeds the
