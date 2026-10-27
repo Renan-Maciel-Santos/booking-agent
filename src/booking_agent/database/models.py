@@ -248,6 +248,7 @@ class ConversationState(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=sa.text("now()"),
+        index=True,
     )
 
     __table_args__ = (
@@ -270,6 +271,7 @@ class ProcessedMessage(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=sa.text("now()"),
+        index=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
