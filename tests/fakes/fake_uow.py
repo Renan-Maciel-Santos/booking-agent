@@ -411,6 +411,27 @@ class FakeConversationStateRepository:
             updated_at=now,
         )
 
+    async def delete_inactive_since(
+        self,
+        cutoff: datetime,
+        batch_size: int,
+    ) -> int:
+        """Delete conversation states with updated_at < cutoff, excluding 'executing' stage."""
+        total = 0
+        while True:
+            eligible_phones = [
+                phone
+                for phone, state in self._staged.items()
+                if state.updated_at < cutoff and state.stage != ConversationStage.EXECUTING.value
+            ]
+            batch_phones = eligible_phones[:batch_size]
+            if not batch_phones:
+                break
+            for phone in batch_phones:
+                del self._staged[phone]
+            total += len(batch_phones)
+        return total
+
 
 class FakeProcessedMessageRepository:
     """Fake repository managing ProcessedMessage persistence and leasing."""
@@ -484,6 +505,46 @@ class FakeProcessedMessageRepository:
             existing.updated_at = now
             return True
         return False
+
+    async def redact_responses_created_before(
+        self,
+        cutoff: datetime,
+        batch_size: int,
+    ) -> int:
+        """Redact response_text to None for messages created before cutoff."""
+        total = 0
+        while True:
+            eligible = [
+                msg
+                for msg in self._staged.values()
+                if msg.created_at < cutoff and msg.response_text is not None
+            ]
+            batch = eligible[:batch_size]
+            if not batch:
+                break
+            for msg in batch:
+                msg.response_text = None
+            total += len(batch)
+        return total
+
+    async def delete_created_before(
+        self,
+        cutoff: datetime,
+        batch_size: int,
+    ) -> int:
+        """Permanently delete processed messages created before cutoff."""
+        total = 0
+        while True:
+            eligible_ids = [
+                msg_id for msg_id, msg in self._staged.items() if msg.created_at < cutoff
+            ]
+            batch_ids = eligible_ids[:batch_size]
+            if not batch_ids:
+                break
+            for msg_id in batch_ids:
+                del self._staged[msg_id]
+            total += len(batch_ids)
+        return total
 
 
 class FakeUnitOfWork:
