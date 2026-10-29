@@ -334,6 +334,7 @@ class FakeConversationStateRepository:
         self._store = store
         self._staged = staged_states
         self._clock = clock
+        self.last_delete_cutoff: datetime | None = None
 
     def seed_raw(
         self,
@@ -417,6 +418,7 @@ class FakeConversationStateRepository:
         batch_size: int,
     ) -> int:
         """Delete conversation states with updated_at < cutoff, excluding 'executing' stage."""
+        self.last_delete_cutoff = cutoff
         total = 0
         while True:
             eligible_phones = [
@@ -446,6 +448,8 @@ class FakeProcessedMessageRepository:
         self._store = store
         self._staged = staged_messages
         self._clock = clock
+        self.last_redact_cutoff: datetime | None = None
+        self.last_delete_cutoff: datetime | None = None
 
     async def get(self, message_id: str) -> ProcessedMessage | None:
         """Fetch a processed message record by primary key."""
@@ -512,6 +516,7 @@ class FakeProcessedMessageRepository:
         batch_size: int,
     ) -> int:
         """Redact response_text to None for messages created before cutoff."""
+        self.last_redact_cutoff = cutoff
         total = 0
         while True:
             eligible = [
@@ -533,6 +538,7 @@ class FakeProcessedMessageRepository:
         batch_size: int,
     ) -> int:
         """Permanently delete processed messages created before cutoff."""
+        self.last_delete_cutoff = cutoff
         total = 0
         while True:
             eligible_ids = [
