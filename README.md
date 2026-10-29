@@ -189,6 +189,35 @@ uv run uvicorn booking_agent.main:create_app --factory --reload
 
 Commands executed on the host connect to PostgreSQL outside the Docker network. They require `POSTGRES_HOST=localhost` and require `POSTGRES_PORT` to match `POSTGRES_HOST_PORT` from `.env` whenever the host port mapping differs from `5432`.
 
+## Data retention
+
+In compliance with data minimisation principles, personal data in stored message responses and dialogue state is pruned periodically through automated retention rules:
+
+| Target | Rule | Configuration Setting | Default |
+|---|---|---|---|
+| `processed_messages.response_text` | Set to `NULL` (preserves `message_id` for deduplication) | `PROCESSED_MESSAGE_REDACT_AFTER_DAYS` | 7 days |
+| `processed_messages` rows | Permanently deleted | `PROCESSED_MESSAGE_DELETE_AFTER_DAYS` | 90 days |
+| `conversation_states` rows | Permanently deleted when inactive (excluding `executing` stage) | `CONVERSATION_STATE_DELETE_AFTER_DAYS` | 30 days |
+
+### Command
+
+Execute the one-shot purge job:
+```bash
+python -m booking_agent.jobs.retention
+```
+
+### Daily schedule example
+
+Using `cron` (e.g. daily at 03:00):
+```cron
+0 3 * * * cd /path/to/booking-agent && docker compose run --rm app python -m booking_agent.jobs.retention
+```
+
+Using Docker Compose directly:
+```bash
+docker compose run --rm app python -m booking_agent.jobs.retention
+```
+
 ## Tech stack
 
 | Technology | Role |
