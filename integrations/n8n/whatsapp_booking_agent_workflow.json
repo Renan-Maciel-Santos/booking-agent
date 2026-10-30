@@ -191,6 +191,37 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-has-reply-text",
+              "leftValue": "={{ $json.body?.response_text || '' }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-filter-has-reply",
+      "name": "Filter Has Reply Text",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        180
+      ]
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "https://graph.facebook.com/v19.0/me/messages",
         "sendHeaders": true,
@@ -216,7 +247,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1460,
+        1560,
         180
       ]
     },
@@ -332,7 +363,7 @@
       "main": [
         [
           {
-            "node": "Send WhatsApp Reply (200 OK)",
+            "node": "Filter Has Reply Text",
             "type": "main",
             "index": 0
           }
@@ -352,6 +383,18 @@
             "index": 0
           }
         ]
+      ]
+    },
+    "Filter Has Reply Text": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reply (200 OK)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
       ]
     }
   },

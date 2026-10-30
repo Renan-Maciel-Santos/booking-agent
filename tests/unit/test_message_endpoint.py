@@ -522,6 +522,8 @@ def test_n8n_workflow_file_is_valid_json() -> None:
     assert "Normalize & Sign Payload" in node_names
     assert "POST /v1/messages" in node_names
     assert "Switch by HTTP Status" in node_names
+    assert "Filter Has Reply Text" in node_names
+    assert "Send WhatsApp Reply (200 OK)" in node_names
 
 
 async def test_replaying_redacted_done_message_returns_200_with_null_reply_and_no_appointment(
