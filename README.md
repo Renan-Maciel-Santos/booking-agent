@@ -103,6 +103,21 @@ flowchart TD
 - **HMAC-SHA256 with timestamp tolerance window**: Webhooks authenticate incoming payloads using HMAC-SHA256 signatures (`X-Signature: sha256=<hex>`) computed over a canonicalized body and Unix timestamp (`X-Timestamp`). Constant-time comparison and a 300s clock drift window prevent payload tampering and replay attacks before any JSON parsing occurs. See [ADR 0006](docs/adr/0006-message-endpoint-and-channel-integration.md).
 - **Deterministic concurrency testing**: Concurrency protection is proven via deterministic test suites using `threading.Barrier` and `asyncio.Event` synchronization primitives rather than nondeterministic sleep delays. See [ADR 0005](docs/adr/0005-conversation-flow-and-state-machine.md) and [`test_conversation_concurrency.py`](tests/integration/test_conversation_concurrency.py).
 
+## How this was built
+
+This project was built with AI coding agents under my direction, as a deliberate exercise in AI-assisted engineering where every decision stays with a human.
+
+- **Design before code.** Each significant decision is recorded as an [ADR](docs/adr/) and approved before implementation. Coding agents implement against the ADR, one small pull request at a time.
+- **Independent verification.** Agent reports are treated as claims, not evidence. Each pull request is reviewed with the help of a second model and verified independently: running the suite against PostgreSQL, running the demo, querying the resulting database state, and comparing extracted code against the code it replaced.
+- **Rules learned from real failures.** [AGENTS.md](AGENTS.md) holds the process rules for the agents, and each one comes from a mistake caught in review.
+
+Some of the issues that review caught:
+
+- During a booking confirmation, the reply "pode cancelar" ("go ahead and cancel") was treated as a plain "yes" and booked the appointment the customer had just declined. The fix became a design principle: [the confirmation shown is the action executed](docs/adr/0007-confirmation-consistency.md).
+- A refactor would have turned a reschedule into a second booking when the customer changed the time during confirmation. End-to-end tests that assert the final database state, not only the reply, caught it before merge.
+- An agent report contained demo output that had never been run. Re-running it exposed the gap, and AGENTS.md now requires every claim to come from command output.
+- After personal-data retention was added, replaying an old message returned a fabricated greeting instead of no reply. A live replay against a real database caught it.
+
 ## Quick start
 
 ### 1. Configure environment
