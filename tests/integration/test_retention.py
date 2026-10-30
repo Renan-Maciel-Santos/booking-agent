@@ -447,3 +447,4 @@ async def test_retention_cli_command_exits_zero(
     assert result.returncode == 0
     output = result.stderr + result.stdout
     assert "data_retention_completed" in output
+    assert "booking_agent.jobs.retention" in output

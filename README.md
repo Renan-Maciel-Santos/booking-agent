@@ -86,6 +86,8 @@ flowchart TD
     B -->|WhatsApp Reply| A
 ```
 
+> In the API response, `response_text: null` indicates that there is nothing to send to the customer (HTTP 202 while a concurrent turn is processing, or an HTTP 200 replay of an already-redacted message); the channel workflow terminates without sending an outbound reply.
+
 ## Engineering highlights
 
 - **The confirmation shown is the action executed**: The conversational state machine binds prompt rendering and action execution to a single typed pending flow and fully populated, typed `ConfirmationDetails`. Context-dependent confirmation tokens (e.g., "pode cancelar") are disambiguated by exhaustive matching so they only confirm pending cancellations and abort other operations. Any missing details or mid-confirmation flow changes (such as rescheduling instead of cancelling) fail safe to `IDLE` or transition to the updated flow without executing divergent actions. See [Issue #14](https://github.com/Renan-Maciel-Santos/booking-agent/issues/14) and [PR #12](https://github.com/Renan-Maciel-Santos/booking-agent/pull/12).

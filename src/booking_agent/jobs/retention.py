@@ -16,7 +16,7 @@ from booking_agent.integrations.system_clock import SystemClock
 from booking_agent.logging_config import configure_logging
 from booking_agent.services.retention_service import RetentionReport, RetentionService
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("booking_agent.jobs.retention")
 
 
 async def run_retention_job(
