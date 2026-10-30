@@ -1,7 +1,9 @@
 """Repository for ConversationState persistence and locking."""
 
+from datetime import datetime
+
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import CursorResult, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,19 @@ from booking_agent.domain.conversation_state import (
 )
 from booking_agent.domain.enums import ConversationStage
 from booking_agent.domain.errors import InvalidConversationStateError
+
+_DELETE_INACTIVE_CONVERSATIONS_BATCH_STATEMENT = text(
+    """
+    DELETE FROM conversation_states
+    WHERE ctid IN (
+        SELECT ctid
+        FROM conversation_states
+        WHERE updated_at < :cutoff
+          AND stage != :stage_executing
+        LIMIT :batch_size
+    )
+    """
+)
 
 
 class ConversationStateRepository:
@@ -113,3 +128,36 @@ class ConversationStateRepository:
             slots=slots,
             updated_at=row.updated_at,
         )
+
+    async def delete_inactive_since(
+        self,
+        cutoff: datetime,
+        batch_size: int,
+    ) -> int:
+        """Permanently delete conversation states inactive since cutoff, excluding executing stage.
+
+        Processes in batches of batch_size until no eligible rows remain.
+
+        Args:
+            cutoff: Cutoff datetime; states updated strictly before this are deleted.
+            batch_size: Maximum rows to delete per statement batch.
+
+        Returns:
+            Total count of deleted conversation states.
+        """
+        total_deleted = 0
+        while True:
+            result = await self._session.execute(
+                _DELETE_INACTIVE_CONVERSATIONS_BATCH_STATEMENT,
+                {
+                    "cutoff": cutoff,
+                    "batch_size": batch_size,
+                    "stage_executing": ConversationStage.EXECUTING.value,
+                },
+            )
+            affected = result.rowcount if isinstance(result, CursorResult) else 0
+            if affected == 0:
+                break
+            total_deleted += affected
+            await self._session.flush()
+        return total_deleted

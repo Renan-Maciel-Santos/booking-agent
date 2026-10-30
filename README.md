@@ -86,6 +86,8 @@ flowchart TD
     B -->|WhatsApp Reply| A
 ```
 
+> In the API response, `response_text: null` indicates that there is nothing to send to the customer (HTTP 202 while a concurrent turn is processing, or an HTTP 200 replay of an already-redacted message); the channel workflow terminates without sending an outbound reply.
+
 ## Engineering highlights
 
 - **The confirmation shown is the action executed**: The conversational state machine binds prompt rendering and action execution to a single typed pending flow and fully populated, typed `ConfirmationDetails`. Context-dependent confirmation tokens (e.g., "pode cancelar") are disambiguated by exhaustive matching so they only confirm pending cancellations and abort other operations. Any missing details or mid-confirmation flow changes (such as rescheduling instead of cancelling) fail safe to `IDLE` or transition to the updated flow without executing divergent actions. See [Issue #14](https://github.com/Renan-Maciel-Santos/booking-agent/issues/14) and [PR #12](https://github.com/Renan-Maciel-Santos/booking-agent/pull/12).
@@ -188,6 +190,35 @@ uv run uvicorn booking_agent.main:create_app --factory --reload
 ```
 
 Commands executed on the host connect to PostgreSQL outside the Docker network. They require `POSTGRES_HOST=localhost` and require `POSTGRES_PORT` to match `POSTGRES_HOST_PORT` from `.env` whenever the host port mapping differs from `5432`.
+
+## Data retention
+
+In compliance with data minimisation principles, personal data in stored message responses and dialogue state is pruned periodically through automated retention rules:
+
+| Target | Rule | Configuration Setting | Default |
+|---|---|---|---|
+| `processed_messages.response_text` | Set to `NULL` (preserves `message_id` for deduplication) | `PROCESSED_MESSAGE_REDACT_AFTER_DAYS` | 7 days |
+| `processed_messages` rows | Permanently deleted | `PROCESSED_MESSAGE_DELETE_AFTER_DAYS` | 90 days |
+| `conversation_states` rows | Permanently deleted when inactive (excluding `executing` stage) | `CONVERSATION_STATE_DELETE_AFTER_DAYS` | 30 days |
+
+### Command
+
+Execute the one-shot purge job:
+```bash
+python -m booking_agent.jobs.retention
+```
+
+### Daily schedule example
+
+Using `cron` (e.g. daily at 03:00):
+```cron
+0 3 * * * cd /path/to/booking-agent && docker compose run --rm app python -m booking_agent.jobs.retention
+```
+
+Using Docker Compose directly:
+```bash
+docker compose run --rm app python -m booking_agent.jobs.retention
+```
 
 ## Tech stack
 

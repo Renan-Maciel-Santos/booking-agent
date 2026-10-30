@@ -214,6 +214,18 @@ class ConversationStateRepositoryPort(Protocol):
         """Insert or update conversation state."""
         ...
 
+    async def delete_inactive_since(self, cutoff: datetime, batch_size: int) -> int:
+        """Permanently delete conversation states inactive since cutoff, excluding executing stage.
+
+        Args:
+            cutoff: Cutoff datetime; states updated strictly before this are deleted.
+            batch_size: Maximum rows to delete per batch.
+
+        Returns:
+            Total count of deleted conversation states.
+        """
+        ...
+
 
 class ProcessedMessageRepositoryPort(Protocol):
     """Port for ProcessedMessage idempotency tracking and leasing."""
@@ -232,6 +244,38 @@ class ProcessedMessageRepositoryPort(Protocol):
 
     async def mark_failed(self, message_id: str) -> bool:
         """Mark a message as failed."""
+        ...
+
+    async def redact_responses_created_before(
+        self,
+        cutoff: datetime,
+        batch_size: int,
+    ) -> int:
+        """Redact response_text to NULL for messages created before cutoff.
+
+        Args:
+            cutoff: Cutoff datetime; messages created strictly before this are redacted.
+            batch_size: Maximum rows to redact per batch.
+
+        Returns:
+            Total count of redacted message responses.
+        """
+        ...
+
+    async def delete_created_before(
+        self,
+        cutoff: datetime,
+        batch_size: int,
+    ) -> int:
+        """Permanently delete processed message records created before cutoff.
+
+        Args:
+            cutoff: Cutoff datetime; messages created strictly before this are deleted.
+            batch_size: Maximum rows to delete per batch.
+
+        Returns:
+            Total count of deleted message rows.
+        """
         ...
 
 

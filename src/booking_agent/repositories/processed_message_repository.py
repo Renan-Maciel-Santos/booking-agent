@@ -1,6 +1,8 @@
 """Repository for ProcessedMessage idempotency and atomic acquisition."""
 
-from sqlalchemy import select, text
+from datetime import datetime
+
+from sqlalchemy import CursorResult, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from booking_agent.database.models import ProcessedMessage
@@ -40,6 +42,32 @@ _MARK_FAILED_STATEMENT = text(
     SET status = :status_failed, updated_at = now()
     WHERE message_id = :message_id
     RETURNING message_id
+    """
+)
+
+_REDACT_RESPONSES_BATCH_STATEMENT = text(
+    """
+    UPDATE processed_messages
+    SET response_text = NULL
+    WHERE ctid IN (
+        SELECT ctid
+        FROM processed_messages
+        WHERE created_at < :cutoff
+          AND response_text IS NOT NULL
+        LIMIT :batch_size
+    )
+    """
+)
+
+_DELETE_MESSAGES_BATCH_STATEMENT = text(
+    """
+    DELETE FROM processed_messages
+    WHERE ctid IN (
+        SELECT ctid
+        FROM processed_messages
+        WHERE created_at < :cutoff
+        LIMIT :batch_size
+    )
     """
 )
 
@@ -144,3 +172,61 @@ class ProcessedMessageRepository:
         )
         await self._session.flush()
         return result.scalar_one_or_none() is not None
+
+    async def redact_responses_created_before(
+        self,
+        cutoff: datetime,
+        batch_size: int,
+    ) -> int:
+        """Redact response_text to NULL for messages created before cutoff.
+
+        Processes in batches of batch_size until no eligible rows remain.
+
+        Args:
+            cutoff: Cutoff datetime; records created strictly before this are redacted.
+            batch_size: Maximum rows to redact per statement batch.
+
+        Returns:
+            Total count of redacted message responses.
+        """
+        total_redacted = 0
+        while True:
+            result = await self._session.execute(
+                _REDACT_RESPONSES_BATCH_STATEMENT,
+                {"cutoff": cutoff, "batch_size": batch_size},
+            )
+            affected = result.rowcount if isinstance(result, CursorResult) else 0
+            if affected == 0:
+                break
+            total_redacted += affected
+            await self._session.flush()
+        return total_redacted
+
+    async def delete_created_before(
+        self,
+        cutoff: datetime,
+        batch_size: int,
+    ) -> int:
+        """Permanently delete processed message records created before cutoff.
+
+        Processes in batches of batch_size until no eligible rows remain.
+
+        Args:
+            cutoff: Cutoff datetime; records created strictly before this are deleted.
+            batch_size: Maximum rows to delete per statement batch.
+
+        Returns:
+            Total count of deleted message rows.
+        """
+        total_deleted = 0
+        while True:
+            result = await self._session.execute(
+                _DELETE_MESSAGES_BATCH_STATEMENT,
+                {"cutoff": cutoff, "batch_size": batch_size},
+            )
+            affected = result.rowcount if isinstance(result, CursorResult) else 0
+            if affected == 0:
+                break
+            total_deleted += affected
+            await self._session.flush()
+        return total_deleted
