@@ -138,6 +138,7 @@ async def test_retention_redacted_message_deduplicates_without_reprocessing(
     # Assert it was treated as idempotent replay, not reprocessed
     assert turn_result.outcome == "idempotent_replay"
     assert turn_result.status_code == 200
+    assert turn_result.response_text is None
 
     # Assert no appointment was created in the database
     async with session_factory() as verify_session:

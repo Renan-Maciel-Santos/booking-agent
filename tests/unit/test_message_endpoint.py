@@ -18,11 +18,16 @@ from booking_agent.api.dependencies import (
 from booking_agent.api.rate_limiter import PhoneRateLimiter, get_rate_limiter
 from booking_agent.api.security import compute_signature
 from booking_agent.config import Settings
+from booking_agent.database.models import ProcessedMessage
+from booking_agent.domain.enums import MessageStatus
 from booking_agent.domain.errors import LLMConfigurationError, LLMUnavailableError
+from booking_agent.integrations.llm.fake_intent_parser import FakeIntentParser
 from booking_agent.main import create_app
+from booking_agent.services.booking_service import BookingService
 from booking_agent.services.conversation_service import ConversationService, TurnResult
+from booking_agent.services.entity_resolver import EntityResolver
 from tests.fakes.fake_clock import FakeClock
-from tests.fakes.fake_uow import FakeUnitOfWorkFactory
+from tests.fakes.fake_uow import FakeUnitOfWorkFactory, InMemoryDataStore
 
 
 def _build_test_client(
@@ -31,6 +36,7 @@ def _build_test_client(
     turn_result: TurnResult | None = None,
     conversation_service_override: ConversationService | AsyncMock | None = None,
     rate_limiter_override: PhoneRateLimiter | None = None,
+    uow_factory_override: FakeUnitOfWorkFactory | None = None,
 ) -> AsyncClient:
     """Create an AsyncClient with mocked/faked dependencies for unit isolation."""
     app = create_app(settings)
@@ -39,7 +45,7 @@ def _build_test_client(
         max_requests=settings.rate_limit_requests_per_minute,
         window_seconds=60.0,
     )
-    uow_factory = FakeUnitOfWorkFactory(clock=clock)
+    uow_factory = uow_factory_override or FakeUnitOfWorkFactory(clock=clock)
 
     if conversation_service_override is not None:
         service_mock = conversation_service_override
@@ -516,3 +522,62 @@ def test_n8n_workflow_file_is_valid_json() -> None:
     assert "Normalize & Sign Payload" in node_names
     assert "POST /v1/messages" in node_names
     assert "Switch by HTTP Status" in node_names
+
+
+async def test_replaying_redacted_done_message_returns_200_with_null_reply_and_no_appointment(
+    test_settings: Settings,
+) -> None:
+    # Arrange: seed an already-completed message whose response_text was redacted to None
+    clock = FakeClock()
+    store = InMemoryDataStore()
+    uow_factory = FakeUnitOfWorkFactory(store=store, clock=clock)
+
+    msg_id = "msg-redacted-done-replay"
+    phone = "+5511999998888"
+    now = clock.now()
+    store.processed_messages[msg_id] = ProcessedMessage(
+        message_id=msg_id,
+        status=MessageStatus.DONE.value,
+        response_text=None,
+        created_at=now - timedelta(days=10),
+        updated_at=now - timedelta(days=10),
+    )
+
+    booking_service = BookingService(uow_factory=uow_factory, clock=clock, settings=test_settings)
+    entity_resolver = EntityResolver()
+    intent_parser = FakeIntentParser(clock=clock)
+    conv_service = ConversationService(
+        intent_parser=intent_parser,
+        booking_service=booking_service,
+        entity_resolver=entity_resolver,
+        clock=clock,
+        uow_factory=uow_factory,
+        settings=test_settings,
+    )
+
+    payload = {
+        "message_id": msg_id,
+        "phone": phone,
+        "text": "Quero agendar um corte amanhã às 14h",
+        "timestamp": now.isoformat(),
+    }
+    raw_body = json.dumps(payload).encode("utf-8")
+    headers = _sign(
+        raw_body,
+        test_settings.webhook_secret.get_secret_value(),
+        fake_clock=clock,
+    )
+
+    # Act
+    async with _build_test_client(
+        test_settings,
+        clock,
+        conversation_service_override=conv_service,
+        uow_factory_override=uow_factory,
+    ) as client:
+        response = await client.post("/v1/messages", content=raw_body, headers=headers)
+
+    # Assert: 200 OK with null response_text (no fabricated greeting fallback)
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"response_text": None}
+    assert len(store.appointments) == 0

@@ -183,8 +183,7 @@ class ConversationService:
             total_ms = (time_module.perf_counter() - t0) * 1000
             if acquisition.status == MessageStatus.DONE:
                 return TurnResult(
-                    response_text=acquisition.response_text
-                    or render_template(TemplateKey.GREETING_HELP),
+                    response_text=acquisition.response_text,
                     status_code=200,
                     outcome="idempotent_replay",
                     phase1_lease_ms=phase1_ms,
