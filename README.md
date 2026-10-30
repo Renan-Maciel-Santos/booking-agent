@@ -304,7 +304,7 @@ docs/                    # Design documentation and Architecture Decision Record
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for notable changes, releases, and migration notes.
+See [CHANGELOG.md](CHANGELOG.md) for the notable changes in each release.
 
 ## License
 
