@@ -1,5 +1,6 @@
 """Application factory and lifespan management."""
 
+import importlib.metadata
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,6 +23,8 @@ from booking_agent.integrations.system_clock import SystemClock
 from booking_agent.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
+
+APP_VERSION = importlib.metadata.version("booking-agent")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -82,7 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await app.state.engine.dispose()
             logger.info("application stopped")
 
-    app = FastAPI(title=app_settings.app_name, version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title=app_settings.app_name, version=APP_VERSION, lifespan=lifespan)
     app.state.settings = app_settings
 
     # Body size limit runs after RequestIdMiddleware has assigned a correlation ID.
