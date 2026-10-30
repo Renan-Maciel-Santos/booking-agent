@@ -1,6 +1,7 @@
 # booking-agent
 
 [![CI](https://github.com/Renan-Maciel-Santos/booking-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Renan-Maciel-Santos/booking-agent/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Renan-Maciel-Santos/booking-agent)](https://github.com/Renan-Maciel-Santos/booking-agent/releases)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -300,6 +301,10 @@ tests/
 └── fakes/               # Test doubles (FakeClock, FakeUnitOfWork, FakeIntentParser)
 docs/                    # Design documentation and Architecture Decision Records (ADRs)
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for notable changes, releases, and migration notes.
 
 ## License
 
