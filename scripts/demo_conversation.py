@@ -210,8 +210,9 @@ def run_demo(
     base_url: str,
     secret: str,
     phone: str,
-    delay: float,
-    idempotency_check: bool,
+    delay: float = 0.4,
+    idempotency_check: bool = False,
+    pace: float = 0.0,
 ) -> int:
     """Execute the multi-turn conversational demonstration.
 
@@ -221,6 +222,7 @@ def run_demo(
         phone: Customer phone number.
         delay: Artificial delay between turns in seconds.
         idempotency_check: Whether to verify idempotent duplicate replay after Turn 1.
+        pace: Optional pause in seconds before sending each turn.
 
     Returns:
         Exit code: 0 on success, 1 on failure.
@@ -267,7 +269,9 @@ def run_demo(
     total_turns = len(turns)
     with httpx.Client(timeout=30.0) as client:
         for idx, (user_text, description) in enumerate(turns, start=1):
-            if idx > 1 and delay > 0:
+            if pace > 0:
+                time.sleep(pace)
+            elif idx > 1 and delay > 0:
                 time.sleep(delay)
 
             message_id = f"demo-msg-{idx}-{uuid.uuid4().hex[:8]}"
@@ -348,12 +352,33 @@ def resolve_webhook_secret() -> str:
     return ""
 
 
-def main() -> None:
-    """Parse CLI arguments and launch the conversation demo."""
-    # Ensure stdout handles UTF-8 characters across platforms (including Windows cp1252)
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+def validate_pace(value: str) -> float:
+    """Validate that --pace is a non-negative float.
 
+    Args:
+        value: Input CLI string.
+
+    Returns:
+        Validated non-negative float.
+
+    Raises:
+        argparse.ArgumentTypeError: If value is not a float or is negative.
+    """
+    try:
+        val = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid float value: {value!r}") from exc
+    if val < 0.0:
+        raise argparse.ArgumentTypeError(f"pace must be non-negative (>= 0), got {val}")
+    return val
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the CLI argument parser for the demo script.
+
+    Returns:
+        Configured ArgumentParser instance.
+    """
     parser = argparse.ArgumentParser(
         description="Simulate a 7-turn booking conversation against POST /v1/messages.",
     )
@@ -374,11 +399,26 @@ def main() -> None:
         help="Delay in seconds between turns to simulate typing (default: 0.4)",
     )
     parser.add_argument(
+        "--pace",
+        type=validate_pace,
+        default=0.0,
+        help="Pause in seconds before sending each turn for video/GIF recording (default: 0.0)",
+    )
+    parser.add_argument(
         "--idempotency-check",
         action="store_true",
         help="Verify idempotent replay after Turn 1",
     )
+    return parser
 
+
+def main() -> None:
+    """Parse CLI arguments and launch the conversation demo."""
+    # Ensure stdout handles UTF-8 characters across platforms (including Windows cp1252)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    parser = build_parser()
     args = parser.parse_args()
     raw_secret = resolve_webhook_secret()
     try:
@@ -393,6 +433,7 @@ def main() -> None:
         phone=args.phone,
         delay=args.delay,
         idempotency_check=args.idempotency_check,
+        pace=args.pace,
     )
     sys.exit(exit_code)
 
